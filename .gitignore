@@ -11,6 +11,10 @@ dist
 *.log
 pnpm-lock.yaml.bak
 
+# Biome/Turbo
+.turbo
+turbo-*.log
+
 # Tauri
 apps/desktop/src-tauri/target
 apps/desktop/src-tauri/gen

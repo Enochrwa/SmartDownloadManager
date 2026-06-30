@@ -1,0 +1,14 @@
+[package]
+name = "sdm-api-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared request/response DTOs used by sdm-server, sdm-cli, and future SDKs."
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[lib]
+name = "sdm_api_types"
+path = "src/lib.rs"

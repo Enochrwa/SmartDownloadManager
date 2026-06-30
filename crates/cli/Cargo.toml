@@ -1,0 +1,20 @@
+[package]
+name = "sdm-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "sdm — the SmartDownloadManager CLI. Drives the engine in-process for one-shot use, or talks to a running sdmd daemon."
+
+[[bin]]
+name = "sdm"
+path = "src/main.rs"
+
+[dependencies]
+tokio.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+sdm-engine = { path = "../engine" }
+sdm-storage = { path = "../storage" }
+sdm-api-types = { path = "../api-types" }

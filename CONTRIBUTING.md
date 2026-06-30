@@ -11,9 +11,13 @@ Before opening a PR:
 5. Run locally before pushing:
    ```bash
    cargo fmt --all && cargo clippy --all-targets --all-features -- -D warnings
-   cargo test --workspace
-   pnpm -r lint && pnpm -r test
+   cargo nextest run --workspace   # or `cargo test --workspace` if nextest isn't installed
+   cargo deny check licenses        # see docs/LICENSING.md / docs/TECH_DECISIONS.md §11
+   pnpm lint && pnpm test           # Biome + Vitest, orchestrated by Turborepo
    ```
+   Cross-platform dev/release scripts live behind `cargo xtask <command>` —
+   see `crates/xtask` — rather than shell scripts, so they work identically
+   on Windows/macOS/Linux.
 
 ## Commit style
 Conventional commits preferred: `feat(engine): add segment-stealing allocator`,

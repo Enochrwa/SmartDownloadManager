@@ -1,0 +1,2 @@
+# See docs/TECH_DECISIONS.md for the reasoning behind keeping defaults strict.
+too-many-arguments-threshold = 8

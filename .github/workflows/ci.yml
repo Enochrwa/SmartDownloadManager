@@ -30,8 +30,19 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Test
-        run: cargo test --workspace
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+      - name: Test (nextest)
+        run: cargo nextest run --workspace
+
+  license-check:
+    name: License compliance (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
 
   frontend:
     name: Frontend
@@ -46,5 +57,9 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm -r lint
-      - run: pnpm -r test
+      - name: Lint (Biome)
+        run: pnpm lint
+      - name: Build + test (Turborepo)
+        run: |
+          pnpm build
+          pnpm test

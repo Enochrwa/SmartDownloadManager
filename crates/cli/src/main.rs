@@ -1,4 +1,9 @@
-//! `sdm` — the SmartDownloadManager CLI, driving the headless engine.
+//! `sdm` — the SmartDownloadManager CLI.
+//!
+//! Drives sdm-engine in-process for one-shot commands (`sdm download <url>`
+//! works with no daemon running). If a `sdmd` daemon is already up, queue
+//! inspection commands talk to it over REST instead — see
+//! docs/TECH_DECISIONS.md §6 for why the CLI and daemon are separate crates.
 //!
 //! Sprint 1 scope: `sdm download <url> [-o output]`.
 
@@ -13,7 +18,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Download a single URL.
+    /// Download a single URL (runs the engine in-process — no daemon needed).
     Download {
         url: String,
         #[arg(short, long)]

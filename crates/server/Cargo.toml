@@ -1,19 +1,26 @@
 [package]
-name = "sdm-api"
+name = "sdm-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "sdmd — the SmartDownloadManager daemon. Owns the engine, exposes REST + WebSocket."
 
 [[bin]]
-name = "sdm"
+name = "sdmd"
 path = "src/main.rs"
 
 [dependencies]
 tokio.workspace = true
-clap.workspace = true
 axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 sdm-engine = { path = "../engine" }
 sdm-storage = { path = "../storage" }
+sdm-api-types = { path = "../api-types" }
+
+[lib]
+name = "sdm_server"
+path = "src/lib.rs"

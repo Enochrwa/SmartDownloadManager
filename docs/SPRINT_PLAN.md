@@ -14,7 +14,7 @@ Scope:
 - `crates/storage`: SQLite schema for `jobs`, `segments`, `settings` + migrations (sqlx)
 - `crates/protocols`: HTTP/HTTPS GET with streaming write-to-disk, TLS 1.2/1.3 via `rustls`
 - `crates/engine`: minimal `Job` model, single-segment download, progress events (tokio mpsc channel)
-- `crates/api` (`sdm` binary): CLI `download <url> [-o output]` that drives the engine headlessly
+- `crates/cli` (`sdm` binary): CLI `download <url> [-o output]` that drives the engine headlessly, in-process
 
 DoD: `sdm download https://example.com/file.zip` downloads the file with a live progress bar, writes a row to SQLite, and exits 0.
 
@@ -70,7 +70,7 @@ Scope:
 - Nested queues + categories (Movies/Games/Images/Linux ISOs/Documents, user-definable)
 - Bandwidth limiting: global cap, per-download cap, per-domain cap (token-bucket rate limiter shared across segments)
 - Congestion auto-detection: rolling-window throughput drop triggers automatic backoff
-- `crates/api`: REST endpoints for queue CRUD (`axum`), WebSocket channel streaming progress/queue events
+- `crates/server` (`sdmd` binary): REST endpoints for queue CRUD (`axum`), WebSocket channel streaming progress/queue events, via shared `crates/api-types` DTOs
 
 DoD: 10 concurrent queued downloads respect a global bandwidth cap and per-item priority under load test; REST/WS API has OpenAPI-documented endpoints for queue management.
 

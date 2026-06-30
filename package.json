@@ -5,13 +5,16 @@
   "description": "Universal, cross-platform, open-source download manager — HTTP/FTP/SFTP/WebDAV/BitTorrent/Metalink/HLS/DASH and thousands of video sites, one engine.",
   "license": "MIT",
   "scripts": {
-    "dev": "pnpm --filter @sdm/desktop dev",
-    "build": "pnpm --filter @sdm/desktop build",
+    "dev": "turbo run dev --filter=@sdm/desktop",
+    "build": "turbo run build",
     "tauri": "pnpm --filter @sdm/desktop tauri",
-    "lint": "pnpm -r lint",
-    "test": "pnpm -r test"
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "test": "turbo run test"
   },
   "devDependencies": {
+    "turbo": "^2.1.0",
+    "@biomejs/biome": "^1.9.4",
     "typescript": "^5.5.0"
   },
   "packageManager": "pnpm@9.0.0"

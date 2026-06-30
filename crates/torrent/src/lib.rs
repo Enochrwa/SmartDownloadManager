@@ -1,4 +1,4 @@
-//! sdm-torrent: BitTorrent/magnet support.
+//! sdm-torrent: BitTorrent/magnet support, built on `librqbit`.
 //!
-//! Placeholder — scoped for Phase 2 (Sprint 7+). See docs/SPRINT_PLAN.md and
-//! docs/LICENSING.md for the pure-Rust torrent crate decision.
+//! Placeholder — scoped for Phase 2 (Sprint 7+). See docs/SPRINT_PLAN.md.
+//! Crate decision locked in docs/TECH_DECISIONS.md §4.

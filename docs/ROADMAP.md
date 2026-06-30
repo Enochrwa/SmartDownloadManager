@@ -31,5 +31,5 @@ classification, NL search), enterprise policy/audit/quota management, the
 
 ## Explicitly deferred
 - Mobile (Android/iOS) apps — re-scoped once Phase 2 stabilizes; likely a
-  separate React Native or Tauri-mobile app reusing `crates/api`.
+  separate React Native or Tauri-mobile app reusing `crates/server`'s REST/WS API.
 - Built-in antivirus engine — always OS-AV integration, never a bundled scanner.

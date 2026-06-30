@@ -7,7 +7,10 @@ members = [
     "crates/media",
     "crates/storage",
     "crates/scheduler",
-    "crates/api",
+    "crates/api-types",
+    "crates/server",
+    "crates/cli",
+    "crates/xtask",
     "apps/desktop/src-tauri",
 ]
 
@@ -30,6 +33,11 @@ reqwest = { version = "0.12", features = ["stream", "rustls-tls"], default-featu
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls"] }
 clap = { version = "4", features = ["derive"] }
 axum = "0.7"
+# Locked in docs/TECH_DECISIONS.md — wired up starting crates/torrent (Phase 2, Sprint 7)
+# and crates/protocols' HLS/DASH modules (Phase 2, Sprint 9).
+librqbit = "7"
+m3u8-rs = "6"
+dash-mpd-rs = "0.17"
 
 [profile.release]
 opt-level = 3

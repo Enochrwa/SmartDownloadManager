@@ -1,5 +1,7 @@
 # Scripts
 
-Dev/build/release helper scripts live here. Empty for now — Sprint 1 adds
-`dev-setup.sh` (installs Rust/Node toolchains + pnpm) and `check.sh` (runs the
-same fmt/clippy/test/lint suite as CI, locally).
+Cross-platform dev/release automation lives in `crates/xtask` (run via
+`cargo xtask <command>`) rather than here — see `docs/TECH_DECISIONS.md` §12
+for why. This directory is reserved for anything that's genuinely
+platform-specific and can't reasonably be Rust (e.g. a `.dmg` notarization
+helper), which doesn't exist yet.

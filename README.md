@@ -30,6 +30,7 @@ full feature checklist and what's shipped so far.
 |---|---|
 | [`docs/PRD.md`](docs/PRD.md) | Vision, goals, non-goals, MVP success criteria |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System design, crate layout, tech choices and why |
+| [`docs/TECH_DECISIONS.md`](docs/TECH_DECISIONS.md) | Audit of every technology choice, alternatives rejected, and why |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | The five delivery phases |
 | [`docs/SPRINT_PLAN.md`](docs/SPRINT_PLAN.md) | Sprint-by-sprint plan for Phase 1 |
 | [`docs/FEATURES.md`](docs/FEATURES.md) | Every feature, checkboxed, phase-tagged |
@@ -46,7 +47,10 @@ crates/torrent/          BitTorrent/magnet support
 crates/media/             yt-dlp + FFmpeg integration
 crates/storage/            SQLite persistence
 crates/scheduler/           Scheduling + post-download actions
-crates/api/                  CLI (`sdm`) + REST/WebSocket server
+crates/api-types/              Shared DTOs (sdmd <-> sdm <-> future SDKs)
+crates/server/                  sdmd daemon: REST + WebSocket (axum)
+crates/cli/                      sdm CLI: in-process engine driver
+crates/xtask/                     cargo xtask: cross-platform dev/release automation
 packages/ui/          Shared React component library
 packages/common-types/ Shared TypeScript types
 extensions/chrome/      Browser extension (Manifest V3)
@@ -59,19 +63,28 @@ rationale.
 
 ## Getting started (dev)
 
-Prerequisites: Rust (stable), Node.js 20+, pnpm 9+.
+Prerequisites: Rust (stable, pinned via `rust-toolchain.toml`), Node.js 20+, pnpm 9+.
 
 ```bash
 # Rust workspace
 cargo build --workspace
-cargo test --workspace
+cargo nextest run --workspace   # or `cargo test --workspace`
+cargo deny check licenses        # license compliance, see docs/LICENSING.md
 
-# Frontend workspace
+# Frontend workspace (Turborepo-orchestrated)
 pnpm install
 pnpm dev          # runs the desktop app in dev mode (Tauri + Vite)
+pnpm lint         # Biome
+pnpm test         # Vitest, across all packages
 
-# CLI
-cargo run -p sdm-api -- download https://example.com/file.zip
+# CLI (in-process, no daemon required)
+cargo run -p sdm-cli -- download https://example.com/file.zip
+
+# Daemon (REST + WebSocket, for the browser extension / remote clients)
+cargo run -p sdm-server
+
+# Cross-platform dev/release automation
+cargo xtask check
 ```
 
 ## Contributing
