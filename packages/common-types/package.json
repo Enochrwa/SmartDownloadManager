@@ -1,0 +1,11 @@
+{
+  "name": "@sdm/common-types",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}

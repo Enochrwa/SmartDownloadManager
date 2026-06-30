@@ -1,0 +1,13 @@
+[package]
+name = "sdm-torrent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+anyhow.workspace = true
+
+[lib]
+name = "sdm_torrent"
+path = "src/lib.rs"

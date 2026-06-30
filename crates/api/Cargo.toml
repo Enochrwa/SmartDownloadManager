@@ -1,0 +1,19 @@
+[package]
+name = "sdm-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sdm"
+path = "src/main.rs"
+
+[dependencies]
+tokio.workspace = true
+clap.workspace = true
+axum.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+sdm-engine = { path = "../engine" }
+sdm-storage = { path = "../storage" }

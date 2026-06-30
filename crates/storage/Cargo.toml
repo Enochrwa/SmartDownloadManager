@@ -1,0 +1,15 @@
+[package]
+name = "sdm-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+sqlx.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+
+[lib]
+name = "sdm_storage"
+path = "src/lib.rs"

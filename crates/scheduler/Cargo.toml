@@ -1,0 +1,13 @@
+[package]
+name = "sdm-scheduler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+anyhow.workspace = true
+
+[lib]
+name = "sdm_scheduler"
+path = "src/lib.rs"

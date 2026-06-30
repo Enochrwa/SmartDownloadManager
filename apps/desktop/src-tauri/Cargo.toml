@@ -1,0 +1,21 @@
+[package]
+name = "sdm-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+sdm-engine = { path = "../../../crates/engine" }
+sdm-storage = { path = "../../../crates/storage" }
+
+[lib]
+name = "sdm_desktop_lib"
+path = "src/lib.rs"
