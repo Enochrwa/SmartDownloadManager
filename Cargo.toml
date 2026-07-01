@@ -33,6 +33,13 @@ reqwest = { version = "0.12", features = ["stream", "rustls-tls"], default-featu
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls"] }
 clap = { version = "4", features = ["derive"] }
 axum = "0.7"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
+indicatif = "0.17"
+rand = "0.8"
+wiremock = "0.6"
+tempfile = "3"
 # Locked in docs/TECH_DECISIONS.md — wired up starting crates/torrent (Phase 2, Sprint 7)
 # and crates/protocols' HLS/DASH modules (Phase 2, Sprint 9).
 librqbit = "7"
