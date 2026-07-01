@@ -15,6 +15,14 @@ allow = [
     "Unicode-3.0",
     "CC0-1.0",
     "Zlib",
+    # File-level copyleft: only affects modifications to the MPL-licensed
+    # files themselves, none of which we touch. Pulled in transitively via
+    # tauri's HTML parsing stack (dom_query -> selectors/cssparser) and
+    # dirs (option-ext).
+    "MPL-2.0",
+    # Permissive data license used by webpki-roots for its embedded
+    # Mozilla root certificate bundle.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
 

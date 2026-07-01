@@ -10,6 +10,11 @@ reqwest.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+futures-util.workspace = true
+
+[dev-dependencies]
+wiremock.workspace = true
+tempfile.workspace = true
 
 [lib]
 name = "sdm_protocols"

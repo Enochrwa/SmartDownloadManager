@@ -1,5 +1,5 @@
-import { create } from "zustand";
 import type { Job } from "@sdm/common-types";
+import { create } from "zustand";
 
 /**
  * Client-side queue/job state, fed by the sdmd WebSocket event stream
@@ -15,8 +15,7 @@ interface QueueState {
 
 export const useQueueStore = create<QueueState>((set) => ({
   jobs: {},
-  upsertJob: (job) =>
-    set((state) => ({ jobs: { ...state.jobs, [job.id]: job } })),
+  upsertJob: (job) => set((state) => ({ jobs: { ...state.jobs, [job.id]: job } })),
   removeJob: (id) =>
     set((state) => {
       const { [id]: _, ...rest } = state.jobs;

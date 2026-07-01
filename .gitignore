@@ -37,3 +37,7 @@ Thumbs.db
 *.db
 *.sqlite
 *.sqlite3
+
+# Local lockfile (resolved against whatever rustc is on this machine);
+# CI resolves its own against current stable rustc.
+Cargo.lock
