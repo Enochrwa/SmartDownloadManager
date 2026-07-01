@@ -100,16 +100,15 @@ impl Engine {
             job_id: job_id.clone(),
         });
 
-        let probe_info = sdm_protocols::probe(&self.client, &url)
-            .await
-            .map_err(|e| {
-                let _ = progress.send(ProgressEvent::Failed {
-                    job_id: job_id.clone(),
-                    error_class: e.class().as_str().to_string(),
-                    message: e.to_string(),
-                });
-                e
-            })?;
+        let probe_result = sdm_protocols::probe(&self.client, &url).await;
+        if let Err(e) = &probe_result {
+            let _ = progress.send(ProgressEvent::Failed {
+                job_id: job_id.clone(),
+                error_class: e.class().as_str().to_string(),
+                message: e.to_string(),
+            });
+        }
+        let probe_info = probe_result?;
 
         let stored = if is_resume {
             sdm_storage::get_job(&self.pool, &job_id).await?
@@ -145,12 +144,14 @@ impl Engine {
             connections,
         });
 
-        let result = if probe_info.supports_range && probe_info.total_bytes.is_some() {
+        let result = if let (true, Some(total_bytes)) =
+            (probe_info.supports_range, probe_info.total_bytes)
+        {
             self.run_segmented(
                 &job_id,
                 &url,
                 &destination,
-                probe_info.total_bytes.unwrap(),
+                total_bytes,
                 connections,
                 resume_decision,
                 &progress,
@@ -256,7 +257,7 @@ impl Engine {
 
         drop(delta_tx);
         let _ = aggregator.await;
-        result.map_err(EngineError::from)
+        result
     }
 
     /// Sprint 2+3 path: byte-range segmented download with segment
