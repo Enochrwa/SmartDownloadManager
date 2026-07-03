@@ -1,3 +1,6 @@
 // Shared React component library for SmartDownloadManager clients.
 // Populated starting Sprint 6 (desktop UI) per docs/SPRINT_PLAN.md.
-export {};
+
+export { formatBytes, formatSpeed, formatPercent, formatEta } from "./format";
+export { StatusBadge } from "./StatusBadge";
+export { ProgressBar } from "./ProgressBar";
