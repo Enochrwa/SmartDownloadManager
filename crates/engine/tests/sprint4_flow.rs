@@ -253,8 +253,28 @@ async fn mirror_failover_switches_to_a_working_mirror_on_failure() {
         .mount(&server_a)
         .await;
 
-    // Mirror B: works normally.
-    let server_b = mount_range_server(data.clone(), etag).await;
+    // Mirror B: works normally, but its HEAD response is deliberately
+    // delayed so the latency-based mirror ranking deterministically puts
+    // A first (attempt 1) regardless of CI scheduling jitter. GET/Range
+    // GET responses are still fast and correct.
+    let server_b = MockServer::start().await;
+    Mock::given(method("HEAD"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Length", data.len().to_string())
+                .insert_header("Accept-Ranges", "bytes")
+                .insert_header("ETag", etag)
+                .set_delay(Duration::from_millis(200)),
+        )
+        .mount(&server_b)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(RangeResponder {
+            data: data.clone(),
+            etag: etag.to_string(),
+        })
+        .mount(&server_b)
+        .await;
 
     let pool = sdm_storage::connect_in_memory().await.unwrap();
     let engine = Engine::new(pool.clone());
