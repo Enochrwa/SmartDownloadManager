@@ -16,6 +16,12 @@ pub enum ProgressEvent {
         downloaded_bytes: u64,
         total_bytes: Option<u64>,
     },
+    /// Post-download checksum/chunk-hash verification is running
+    /// (Sprint 4). Emitted between the last `Progress` event and either
+    /// `Completed` or `Failed`.
+    Verifying {
+        job_id: String,
+    },
     Retrying {
         job_id: String,
         error_class: String,

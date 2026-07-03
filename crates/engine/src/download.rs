@@ -1,6 +1,8 @@
 //! The download orchestrator: ties probing, segment planning, the
-//! segment-stealing allocator, the retry FSM, and SQLite journaling
-//! together into one `Engine::download` call.
+//! segment-stealing allocator, the retry FSM, mirror rotation, and SQLite
+//! journaling together into one `Engine::download` call. Sprint 4 adds
+//! post-download checksum verification, per-chunk corruption detection,
+//! and duplicate-detection policy handling.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -12,8 +14,11 @@ use sdm_storage::SqlitePool;
 use tokio::fs::File;
 use tokio::sync::Mutex as AsyncMutex;
 
+use crate::chunking::{self, DEFAULT_CHUNK_SIZE};
+use crate::duplicate::{self, DuplicatePolicy};
 use crate::error::EngineError;
 use crate::job::Job;
+use crate::mirrors::{self, MirrorSet};
 use crate::naming::unique_destination;
 use crate::progress::{ProgressEvent, ProgressSender};
 use crate::resume::{decide_resume, ResumeDecision};
@@ -21,11 +26,22 @@ use crate::retry;
 use crate::segment::{
     choose_connection_count, plan_segments, ConnectionsOption, SegmentAllocator, SegmentRuntime,
 };
+use crate::verify::{self, ChecksumAlgorithm, ExpectedChecksum};
 
 pub struct DownloadRequest {
     pub url: String,
+    /// Additional mirror URLs serving the same content (Sprint 4). The
+    /// primary `url` is always tried first at probe time; these widen the
+    /// pool of servers segments can fail over to.
+    pub mirrors: Vec<String>,
     pub destination: PathBuf,
     pub connections: ConnectionsOption,
+    /// Optional pre-supplied checksum to verify the finished download
+    /// against (Sprint 4). Always computed and stored even if `None`.
+    pub expected_checksum: Option<ExpectedChecksum>,
+    /// What to do if this looks like a duplicate of an existing job
+    /// (Sprint 4). Defaults to `Rename`, matching the Sprint 3 behavior.
+    pub duplicate_policy: DuplicatePolicy,
 }
 
 pub struct Engine {
@@ -41,25 +57,110 @@ impl Engine {
         }
     }
 
+    /// Check whether a prospective download looks like a duplicate of an
+    /// existing job (same URL, same destination filename, or same
+    /// checksum). Exposed so callers (e.g. the CLI) can prompt the user
+    /// interactively before deciding on a [`DuplicatePolicy`].
+    pub async fn check_duplicates(
+        &self,
+        url: &str,
+        destination: &std::path::Path,
+        expected_checksum: Option<&str>,
+    ) -> Result<Vec<duplicate::DuplicateMatch>, EngineError> {
+        duplicate::find_duplicates(&self.pool, url, destination, expected_checksum).await
+    }
+
     /// Start a brand-new download.
     pub async fn start_download(
         &self,
         req: DownloadRequest,
         progress: ProgressSender,
     ) -> Result<Job, EngineError> {
+        let duplicates = duplicate::find_duplicates(
+            &self.pool,
+            &req.url,
+            &req.destination,
+            req.expected_checksum.as_ref().map(|c| c.hex.as_str()),
+        )
+        .await?;
+
+        if req.duplicate_policy == DuplicatePolicy::Skip {
+            if let Some(existing) = duplicates.first() {
+                return Err(EngineError::DuplicateSkipped {
+                    existing_job_id: existing.job.id.clone(),
+                });
+            }
+        }
+
+        let destination = match req.duplicate_policy {
+            DuplicatePolicy::Overwrite => req.destination.clone(),
+            DuplicatePolicy::Skip | DuplicatePolicy::Rename => unique_destination(&req.destination),
+        };
+
         let job_id = uuid::Uuid::new_v4().to_string();
-        let destination = unique_destination(&req.destination);
         let dest_str = destination.to_string_lossy().to_string();
         sdm_storage::insert_job(&self.pool, &job_id, &req.url, &dest_str).await?;
+
+        if let Some(expected) = &req.expected_checksum {
+            sdm_storage::set_job_expected_checksum(
+                &self.pool,
+                &job_id,
+                expected.algorithm.as_str(),
+                &expected.hex,
+            )
+            .await?;
+        }
+
+        let mirror_set = self
+            .probe_and_persist_mirrors(&job_id, &req.url, &req.mirrors)
+            .await?;
+
         self.run(
             job_id,
-            req.url,
+            mirror_set,
             destination,
             req.connections,
             false,
             progress,
+            req.expected_checksum,
         )
         .await
+    }
+
+    /// Probe every candidate mirror's latency, rank fastest-first, and
+    /// persist the ranking so a later resume can reuse it without
+    /// re-probing.
+    async fn probe_and_persist_mirrors(
+        &self,
+        job_id: &str,
+        primary_url: &str,
+        extra_mirrors: &[String],
+    ) -> Result<MirrorSet, EngineError> {
+        let mut all_urls = vec![primary_url.to_string()];
+        for m in extra_mirrors {
+            if !all_urls.contains(m) {
+                all_urls.push(m.clone());
+            }
+        }
+
+        let ranked = if all_urls.len() > 1 {
+            let probes = mirrors::probe_mirrors(&self.client, &all_urls).await;
+            mirrors::rank_by_latency(probes)
+        } else {
+            vec![mirrors::MirrorProbe {
+                url: all_urls[0].clone(),
+                latency_ms: None,
+            }]
+        };
+
+        let ranked_urls: Vec<String> = ranked.iter().map(|p| p.url.clone()).collect();
+        let latencies: Vec<Option<i64>> = ranked
+            .iter()
+            .map(|p| p.latency_ms.map(|v| v as i64))
+            .collect();
+        sdm_storage::replace_mirrors(&self.pool, job_id, &ranked_urls, &latencies).await?;
+
+        Ok(MirrorSet::new(ranked_urls))
     }
 
     /// Resume a previously created job (Sprint 3). Re-probes the URL and
@@ -73,16 +174,32 @@ impl Engine {
         let record = sdm_storage::get_job(&self.pool, job_id)
             .await?
             .ok_or_else(|| EngineError::JobNotFound(job_id.to_string()))?;
-        let url = record.url.clone();
         let destination = PathBuf::from(&record.destination);
         let connections = ConnectionsOption::Fixed(record.connections.max(1) as u32);
+
+        let persisted_mirrors = sdm_storage::get_mirrors(&self.pool, job_id).await?;
+        let mirror_set = if persisted_mirrors.is_empty() {
+            MirrorSet::new(vec![record.url.clone()])
+        } else {
+            MirrorSet::new(persisted_mirrors.into_iter().map(|m| m.url).collect())
+        };
+
+        let expected_checksum = match (&record.checksum_algorithm, &record.checksum_expected) {
+            (Some(algo), Some(hex)) => Some(ExpectedChecksum {
+                algorithm: ChecksumAlgorithm::parse(algo)?,
+                hex: hex.clone(),
+            }),
+            _ => None,
+        };
+
         self.run(
             job_id.to_string(),
-            url,
+            mirror_set,
             destination,
             connections,
             true,
             progress,
+            expected_checksum,
         )
         .await
     }
@@ -90,17 +207,19 @@ impl Engine {
     async fn run(
         &self,
         job_id: String,
-        url: String,
+        mirror_set: MirrorSet,
         destination: PathBuf,
         connections_opt: ConnectionsOption,
         is_resume: bool,
         progress: ProgressSender,
+        expected_checksum: Option<ExpectedChecksum>,
     ) -> Result<Job, EngineError> {
         let _ = progress.send(ProgressEvent::Probing {
             job_id: job_id.clone(),
         });
 
-        let probe_result = sdm_protocols::probe(&self.client, &url).await;
+        let primary_url = mirror_set.primary().to_string();
+        let probe_result = sdm_protocols::probe(&self.client, &primary_url).await;
         if let Err(e) = &probe_result {
             let _ = progress.send(ProgressEvent::Failed {
                 job_id: job_id.clone(),
@@ -144,12 +263,17 @@ impl Engine {
             connections,
         });
 
+        let segmented = matches!(
+            (probe_info.supports_range, probe_info.total_bytes),
+            (true, Some(_))
+        );
+
         let result = if let (true, Some(total_bytes)) =
             (probe_info.supports_range, probe_info.total_bytes)
         {
             self.run_segmented(
                 &job_id,
-                &url,
+                &mirror_set,
                 &destination,
                 total_bytes,
                 connections,
@@ -158,8 +282,36 @@ impl Engine {
             )
             .await
         } else {
-            self.run_single_stream(&job_id, &url, &destination, &progress)
+            self.run_single_stream(&job_id, &mirror_set, &destination, &progress)
                 .await
+        };
+
+        // Post-download verification (Sprint 4): compute (and optionally
+        // compare) a whole-file checksum, and — for segmented downloads,
+        // where a specific corrupted byte range can actually be
+        // identified — record per-chunk hashes for later corruption
+        // repair. A checksum mismatch turns a successful transfer into a
+        // failed job, same as any other terminal error.
+        let result = match result {
+            Ok(total) => {
+                let _ = progress.send(ProgressEvent::Verifying {
+                    job_id: job_id.clone(),
+                });
+                match self
+                    .verify_after_download(
+                        &job_id,
+                        &destination,
+                        total,
+                        segmented,
+                        &expected_checksum,
+                    )
+                    .await
+                {
+                    Ok(()) => Ok(total),
+                    Err(e) => Err(e),
+                }
+            }
+            Err(e) => Err(e),
         };
 
         match result {
@@ -179,6 +331,7 @@ impl Engine {
             Err(e) => {
                 let class = match &e {
                     EngineError::Protocol(p) => p.class(),
+                    EngineError::ChecksumMismatch { .. } => ErrorClass::Other,
                     _ => ErrorClass::Other,
                 };
                 sdm_storage::set_job_error(&self.pool, &job_id, class.as_str(), &e.to_string())
@@ -193,13 +346,115 @@ impl Engine {
         }
     }
 
+    /// Compute (and, if the caller supplied one, compare against) the
+    /// whole-file checksum, and record per-chunk hashes for segmented
+    /// downloads so a future `verify_and_repair` can localize corruption.
+    async fn verify_after_download(
+        &self,
+        job_id: &str,
+        destination: &std::path::Path,
+        total_bytes: u64,
+        segmented: bool,
+        expected_checksum: &Option<ExpectedChecksum>,
+    ) -> Result<(), EngineError> {
+        if segmented {
+            chunking::hash_and_record_file(
+                &self.pool,
+                job_id,
+                destination,
+                total_bytes,
+                DEFAULT_CHUNK_SIZE,
+            )
+            .await?;
+        }
+
+        let algorithm = expected_checksum
+            .as_ref()
+            .map(|c| c.algorithm)
+            .unwrap_or(ChecksumAlgorithm::Sha256);
+        let actual = verify::compute_file_checksum(destination, algorithm).await?;
+
+        if let Some(expected) = expected_checksum {
+            let matches = actual.eq_ignore_ascii_case(&expected.hex);
+            sdm_storage::set_job_checksum_result(
+                &self.pool,
+                job_id,
+                algorithm.as_str(),
+                &actual,
+                matches,
+            )
+            .await?;
+            if !matches {
+                return Err(EngineError::ChecksumMismatch {
+                    algorithm: algorithm.as_str().to_string(),
+                    expected: expected.hex.clone(),
+                    actual,
+                });
+            }
+        } else {
+            sdm_storage::set_job_checksum_result(
+                &self.pool,
+                job_id,
+                algorithm.as_str(),
+                &actual,
+                false,
+            )
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Re-verify a completed job's chunk hashes and re-fetch only the
+    /// chunks that no longer match (Sprint 4 targeted corruption repair).
+    /// Returns the number of chunks that were found corrupt and repaired.
+    pub async fn verify_and_repair(&self, job_id: &str) -> Result<usize, EngineError> {
+        let record = sdm_storage::get_job(&self.pool, job_id)
+            .await?
+            .ok_or_else(|| EngineError::JobNotFound(job_id.to_string()))?;
+        let destination = PathBuf::from(&record.destination);
+
+        let corrupt = chunking::find_corrupt_chunks(&self.pool, job_id, &destination).await?;
+        if corrupt.is_empty() {
+            return Ok(0);
+        }
+
+        let persisted_mirrors = sdm_storage::get_mirrors(&self.pool, job_id).await?;
+        let mirror_set = if persisted_mirrors.is_empty() {
+            MirrorSet::new(vec![record.url.clone()])
+        } else {
+            MirrorSet::new(persisted_mirrors.into_iter().map(|m| m.url).collect())
+        };
+
+        let file = Arc::new(AsyncMutex::new(
+            tokio::fs::OpenOptions::new()
+                .write(true)
+                .read(true)
+                .open(&destination)
+                .await?,
+        ));
+
+        let repaired = corrupt.len();
+        for chunk in &corrupt {
+            chunking::repair_chunk(
+                &self.client,
+                mirror_set.primary(),
+                file.clone(),
+                &self.pool,
+                chunk,
+            )
+            .await?;
+        }
+        Ok(repaired)
+    }
+
     /// Sprint 1 fallback path: the server doesn't support byte ranges (or
     /// we don't know the size), so we stream the whole thing sequentially.
     /// Not resumable mid-stream; a retry restarts from byte 0.
     async fn run_single_stream(
         &self,
         job_id: &str,
-        url: &str,
+        mirror_set: &MirrorSet,
         destination: &std::path::Path,
         progress: &ProgressSender,
     ) -> Result<u64, EngineError> {
@@ -228,6 +483,7 @@ impl Engine {
         let mut attempt = 0u32;
         let result = loop {
             attempt += 1;
+            let url = mirror_set.pick_for_attempt(attempt);
             match sdm_protocols::download_single(
                 &self.client,
                 url,
@@ -265,7 +521,7 @@ impl Engine {
     async fn run_segmented(
         &self,
         job_id: &str,
-        url: &str,
+        mirror_set: &MirrorSet,
         destination: &std::path::Path,
         total_bytes: u64,
         connections: u32,
@@ -380,7 +636,7 @@ impl Engine {
         let mut handles = Vec::with_capacity(worker_count as usize);
         for _ in 0..worker_count {
             let client = self.client.clone();
-            let url = url.to_string();
+            let mirror_set = mirror_set.clone();
             let file = file.clone();
             let pool = self.pool.clone();
             let work_queue = work_queue.clone();
@@ -421,7 +677,14 @@ impl Engine {
                     };
 
                     run_segment_with_retry(
-                        &client, &url, &seg, &file, &pool, &delta_tx, &progress, &job_id,
+                        &client,
+                        &mirror_set,
+                        &seg,
+                        &file,
+                        &pool,
+                        &delta_tx,
+                        &progress,
+                        &job_id,
                     )
                     .await?;
                 }
@@ -458,7 +721,7 @@ impl Engine {
 #[allow(clippy::too_many_arguments)]
 async fn run_segment_with_retry(
     client: &reqwest::Client,
-    url: &str,
+    mirror_set: &MirrorSet,
     seg: &SegmentRuntime,
     file: &Arc<AsyncMutex<File>>,
     pool: &SqlitePool,
@@ -469,6 +732,7 @@ async fn run_segment_with_retry(
     let mut attempt = 0u32;
     loop {
         attempt += 1;
+        let url = mirror_set.pick_for_attempt(attempt);
         let resume_start = seg.position.load(Ordering::SeqCst);
         let _ = sdm_storage::update_segment(
             pool,
@@ -535,7 +799,13 @@ async fn run_segment_with_retry(
                     attempt,
                     delay_ms: delay.as_millis() as u64,
                 });
-                tokio::time::sleep(delay).await;
+                // If there's more than one mirror, the delay above is
+                // skipped in favor of an immediate switch to the next
+                // mirror — no point sleeping when a different server might
+                // just work.
+                if mirror_set.len() <= 1 {
+                    tokio::time::sleep(delay).await;
+                }
             }
         }
     }

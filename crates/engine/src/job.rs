@@ -13,6 +13,10 @@ pub struct Job {
     pub total_bytes: Option<u64>,
     pub downloaded_bytes: u64,
     pub connections: u32,
+    pub checksum_algorithm: Option<String>,
+    pub checksum_expected: Option<String>,
+    pub checksum_actual: Option<String>,
+    pub checksum_verified: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +54,10 @@ impl From<sdm_storage::JobRecord> for Job {
             total_bytes: r.total_bytes.map(|v| v as u64),
             downloaded_bytes: r.downloaded_bytes as u64,
             connections: r.connections as u32,
+            checksum_algorithm: r.checksum_algorithm,
+            checksum_expected: r.checksum_expected,
+            checksum_actual: r.checksum_actual,
+            checksum_verified: r.checksum_verified,
         }
     }
 }

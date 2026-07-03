@@ -5,6 +5,8 @@
 //! Sprint 3: segment-state journaling — every status transition for a
 //! segment or job is written through to SQLite immediately, so a crash at
 //! any point leaves a recoverable, consistent on-disk state.
+//! Sprint 4: checksum fields on jobs, per-chunk hash rows for targeted
+//! corruption repair, mirror rows, and duplicate-detection lookups.
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -114,6 +116,10 @@ pub struct JobRecord {
     pub last_modified: Option<String>,
     pub error_class: Option<String>,
     pub error_message: Option<String>,
+    pub checksum_algorithm: Option<String>,
+    pub checksum_expected: Option<String>,
+    pub checksum_actual: Option<String>,
+    pub checksum_verified: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -230,7 +236,8 @@ pub async fn update_job_downloaded_bytes(
 pub async fn get_job(pool: &SqlitePool, id: &str) -> anyhow::Result<Option<JobRecord>> {
     let row = sqlx::query(
         "SELECT id, url, destination, status, total_bytes, downloaded_bytes, connections,
-                supports_range, etag, last_modified, error_class, error_message
+                supports_range, etag, last_modified, error_class, error_message,
+                checksum_algorithm, checksum_expected, checksum_actual, checksum_verified
          FROM jobs WHERE id = ?1",
     )
     .bind(id)
@@ -244,7 +251,8 @@ pub async fn get_job(pool: &SqlitePool, id: &str) -> anyhow::Result<Option<JobRe
 pub async fn list_jobs(pool: &SqlitePool) -> anyhow::Result<Vec<JobRecord>> {
     let rows = sqlx::query(
         "SELECT id, url, destination, status, total_bytes, downloaded_bytes, connections,
-                supports_range, etag, last_modified, error_class, error_message
+                supports_range, etag, last_modified, error_class, error_message,
+                checksum_algorithm, checksum_expected, checksum_actual, checksum_verified
          FROM jobs ORDER BY created_at DESC",
     )
     .fetch_all(pool)
@@ -268,7 +276,82 @@ fn row_to_job(row: sqlx::sqlite::SqliteRow) -> anyhow::Result<JobRecord> {
         last_modified: row.try_get("last_modified")?,
         error_class: row.try_get("error_class")?,
         error_message: row.try_get("error_message")?,
+        checksum_algorithm: row.try_get("checksum_algorithm")?,
+        checksum_expected: row.try_get("checksum_expected")?,
+        checksum_actual: row.try_get("checksum_actual")?,
+        checksum_verified: row.try_get::<i64, _>("checksum_verified")? != 0,
     })
+}
+
+/// Persist the expected checksum (if the caller supplied one) at job
+/// creation/start time, before the download runs.
+pub async fn set_job_expected_checksum(
+    pool: &SqlitePool,
+    id: &str,
+    algorithm: &str,
+    expected_hex: &str,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE jobs SET checksum_algorithm = ?1, checksum_expected = ?2 WHERE id = ?3")
+        .bind(algorithm)
+        .bind(expected_hex)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Persist the actual (computed) checksum and whether it matched the
+/// expected value, once verification has run post-download.
+pub async fn set_job_checksum_result(
+    pool: &SqlitePool,
+    id: &str,
+    algorithm: &str,
+    actual_hex: &str,
+    verified: bool,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE jobs SET checksum_algorithm = ?1, checksum_actual = ?2, checksum_verified = ?3 WHERE id = ?4",
+    )
+    .bind(algorithm)
+    .bind(actual_hex)
+    .bind(verified as i64)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Find existing jobs that look like duplicates of a new request: same
+/// source URL, same destination filename, or (if a checksum is already
+/// known for the new request) same completed checksum. Used to drive
+/// duplicate-detection policy (overwrite/rename/skip) before a new
+/// download starts.
+pub async fn find_duplicate_jobs(
+    pool: &SqlitePool,
+    url: &str,
+    destination_filename: &str,
+    checksum: Option<&str>,
+) -> anyhow::Result<Vec<JobRecord>> {
+    let like_pattern = format!("%/{destination_filename}");
+    let rows = sqlx::query(
+        "SELECT id, url, destination, status, total_bytes, downloaded_bytes, connections,
+                supports_range, etag, last_modified, error_class, error_message,
+                checksum_algorithm, checksum_expected, checksum_actual, checksum_verified
+         FROM jobs
+         WHERE url = ?1
+            OR destination = ?2
+            OR destination LIKE ?3
+            OR (?4 IS NOT NULL AND checksum_actual = ?4)
+         ORDER BY created_at DESC",
+    )
+    .bind(url)
+    .bind(destination_filename)
+    .bind(&like_pattern)
+    .bind(checksum)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter().map(row_to_job).collect()
 }
 
 /// Replace all segments for a job (used when (re)starting a download).
@@ -409,6 +492,184 @@ pub async fn shrink_segment_end(
     Ok(())
 }
 
+/// One fixed-size chunk's hash within a segment, recorded as it lands on
+/// disk. Used by the corruption-repair pass to identify and re-fetch only
+/// the byte range that's actually bad, instead of the whole file/segment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkRecord {
+    pub id: String,
+    pub job_id: String,
+    pub seq: i64,
+    pub start_byte: i64,
+    pub end_byte: i64,
+    pub crc32: i64,
+}
+
+/// Insert chunk-hash rows in bulk (one job typically has many chunks).
+pub async fn replace_chunks(
+    pool: &SqlitePool,
+    job_id: &str,
+    chunks: &[(i64, i64, i64, u32)],
+) -> anyhow::Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM chunks WHERE job_id = ?1")
+        .bind(job_id)
+        .execute(&mut *tx)
+        .await?;
+
+    for (seq, start, end, crc32) in chunks.iter().copied() {
+        let id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO chunks (id, job_id, seq, start_byte, end_byte, crc32)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(&id)
+        .bind(job_id)
+        .bind(seq)
+        .bind(start)
+        .bind(end)
+        .bind(crc32 as i64)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Update a single chunk's recorded hash after a targeted repair
+/// re-download.
+pub async fn update_chunk_crc32(pool: &SqlitePool, id: &str, crc32: u32) -> anyhow::Result<()> {
+    sqlx::query("UPDATE chunks SET crc32 = ?1 WHERE id = ?2")
+        .bind(crc32 as i64)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn get_chunks(pool: &SqlitePool, job_id: &str) -> anyhow::Result<Vec<ChunkRecord>> {
+    let rows = sqlx::query(
+        "SELECT id, job_id, seq, start_byte, end_byte, crc32 FROM chunks
+         WHERE job_id = ?1 ORDER BY seq ASC",
+    )
+    .bind(job_id)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(ChunkRecord {
+                id: row.try_get("id")?,
+                job_id: row.try_get("job_id")?,
+                seq: row.try_get("seq")?,
+                start_byte: row.try_get("start_byte")?,
+                end_byte: row.try_get("end_byte")?,
+                crc32: row.try_get("crc32")?,
+            })
+        })
+        .collect()
+}
+
+/// One mirror URL for a job. `seq = 0` is the primary URL.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MirrorRecord {
+    pub id: String,
+    pub job_id: String,
+    pub url: String,
+    pub seq: i64,
+    pub latency_ms: Option<i64>,
+    pub failure_count: i64,
+}
+
+/// Persist the mirror list for a job, in ranked order (index 0 = primary /
+/// fastest at probe time).
+pub async fn replace_mirrors(
+    pool: &SqlitePool,
+    job_id: &str,
+    urls: &[String],
+    latencies_ms: &[Option<i64>],
+) -> anyhow::Result<Vec<MirrorRecord>> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM mirrors WHERE job_id = ?1")
+        .bind(job_id)
+        .execute(&mut *tx)
+        .await?;
+
+    let mut out = Vec::with_capacity(urls.len());
+    for (seq, url) in urls.iter().enumerate() {
+        let id = uuid::Uuid::new_v4().to_string();
+        let latency = latencies_ms.get(seq).copied().flatten();
+        sqlx::query(
+            "INSERT INTO mirrors (id, job_id, url, seq, latency_ms, failure_count)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+        )
+        .bind(&id)
+        .bind(job_id)
+        .bind(url)
+        .bind(seq as i64)
+        .bind(latency)
+        .execute(&mut *tx)
+        .await?;
+        out.push(MirrorRecord {
+            id,
+            job_id: job_id.to_string(),
+            url: url.clone(),
+            seq: seq as i64,
+            latency_ms: latency,
+            failure_count: 0,
+        });
+    }
+    tx.commit().await?;
+    Ok(out)
+}
+
+pub async fn get_mirrors(pool: &SqlitePool, job_id: &str) -> anyhow::Result<Vec<MirrorRecord>> {
+    let rows = sqlx::query(
+        "SELECT id, job_id, url, seq, latency_ms, failure_count FROM mirrors
+         WHERE job_id = ?1 ORDER BY seq ASC",
+    )
+    .bind(job_id)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(MirrorRecord {
+                id: row.try_get("id")?,
+                job_id: row.try_get("job_id")?,
+                url: row.try_get("url")?,
+                seq: row.try_get("seq")?,
+                latency_ms: row.try_get("latency_ms")?,
+                failure_count: row.try_get("failure_count")?,
+            })
+        })
+        .collect()
+}
+
+/// Record a failed attempt against a mirror (used to deprioritize
+/// consistently-failing mirrors on subsequent segment retries).
+pub async fn record_mirror_failure(pool: &SqlitePool, id: &str) -> anyhow::Result<()> {
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE mirrors SET failure_count = failure_count + 1, last_used_at = ?1 WHERE id = ?2",
+    )
+    .bind(&now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn record_mirror_use(pool: &SqlitePool, id: &str) -> anyhow::Result<()> {
+    let now = Utc::now().to_rfc3339();
+    sqlx::query("UPDATE mirrors SET last_used_at = ?1 WHERE id = ?2")
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -527,5 +788,146 @@ mod tests {
         assert_eq!(job.status, JobStatus::Failed);
         assert_eq!(job.error_class.as_deref(), Some("dns_failure"));
         assert_eq!(job.error_message.as_deref(), Some("could not resolve host"));
+    }
+
+    #[tokio::test]
+    async fn checksum_expected_then_result_round_trip() {
+        let pool = connect_in_memory().await.unwrap();
+        insert_job(
+            &pool,
+            "job-1",
+            "https://example.com/file.zip",
+            "/tmp/file.zip",
+        )
+        .await
+        .unwrap();
+
+        set_job_expected_checksum(&pool, "job-1", "sha256", "deadbeef")
+            .await
+            .unwrap();
+        let job = get_job(&pool, "job-1").await.unwrap().unwrap();
+        assert_eq!(job.checksum_algorithm.as_deref(), Some("sha256"));
+        assert_eq!(job.checksum_expected.as_deref(), Some("deadbeef"));
+        assert!(!job.checksum_verified);
+
+        set_job_checksum_result(&pool, "job-1", "sha256", "deadbeef", true)
+            .await
+            .unwrap();
+        let job = get_job(&pool, "job-1").await.unwrap().unwrap();
+        assert_eq!(job.checksum_actual.as_deref(), Some("deadbeef"));
+        assert!(job.checksum_verified);
+    }
+
+    #[tokio::test]
+    async fn chunks_round_trip_and_repair_update() {
+        let pool = connect_in_memory().await.unwrap();
+        insert_job(
+            &pool,
+            "job-1",
+            "https://example.com/file.zip",
+            "/tmp/file.zip",
+        )
+        .await
+        .unwrap();
+
+        replace_chunks(&pool, "job-1", &[(0, 0, 999, 111), (1, 1000, 1999, 222)])
+            .await
+            .unwrap();
+
+        let chunks = get_chunks(&pool, "job-1").await.unwrap();
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].crc32, 111);
+        assert_eq!(chunks[1].crc32, 222);
+
+        update_chunk_crc32(&pool, &chunks[1].id, 999).await.unwrap();
+        let refreshed = get_chunks(&pool, "job-1").await.unwrap();
+        assert_eq!(refreshed[1].crc32, 999);
+    }
+
+    #[tokio::test]
+    async fn mirrors_round_trip_and_failure_tracking() {
+        let pool = connect_in_memory().await.unwrap();
+        insert_job(
+            &pool,
+            "job-1",
+            "https://mirror-a.example.com/file.zip",
+            "/tmp/file.zip",
+        )
+        .await
+        .unwrap();
+
+        let urls = vec![
+            "https://mirror-a.example.com/file.zip".to_string(),
+            "https://mirror-b.example.com/file.zip".to_string(),
+        ];
+        let mirrors = replace_mirrors(&pool, "job-1", &urls, &[Some(50), Some(120)])
+            .await
+            .unwrap();
+        assert_eq!(mirrors.len(), 2);
+        assert_eq!(mirrors[0].seq, 0);
+        assert_eq!(mirrors[0].latency_ms, Some(50));
+
+        record_mirror_failure(&pool, &mirrors[0].id).await.unwrap();
+        record_mirror_failure(&pool, &mirrors[0].id).await.unwrap();
+        record_mirror_use(&pool, &mirrors[1].id).await.unwrap();
+
+        let refreshed = get_mirrors(&pool, "job-1").await.unwrap();
+        assert_eq!(refreshed[0].failure_count, 2);
+        assert_eq!(refreshed[1].failure_count, 0);
+    }
+
+    #[tokio::test]
+    async fn duplicate_detection_matches_by_url_filename_and_checksum() {
+        let pool = connect_in_memory().await.unwrap();
+        insert_job(
+            &pool,
+            "job-1",
+            "https://example.com/movie.mkv",
+            "/downloads/movie.mkv",
+        )
+        .await
+        .unwrap();
+        set_job_checksum_result(&pool, "job-1", "sha256", "abc123", true)
+            .await
+            .unwrap();
+
+        // Same URL.
+        let by_url = find_duplicate_jobs(&pool, "https://example.com/movie.mkv", "movie.mkv", None)
+            .await
+            .unwrap();
+        assert_eq!(by_url.len(), 1);
+
+        // Different URL, same destination filename.
+        let by_name = find_duplicate_jobs(
+            &pool,
+            "https://mirror.example.com/movie.mkv",
+            "movie.mkv",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(by_name.len(), 1);
+
+        // Different URL and filename, but matching checksum.
+        let by_hash = find_duplicate_jobs(
+            &pool,
+            "https://another.example.com/renamed.mkv",
+            "renamed.mkv",
+            Some("abc123"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(by_hash.len(), 1);
+
+        // No overlap at all -> no duplicates.
+        let none = find_duplicate_jobs(
+            &pool,
+            "https://another.example.com/other.mkv",
+            "other.mkv",
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(none.is_empty());
     }
 }
