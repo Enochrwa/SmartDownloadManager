@@ -161,6 +161,9 @@ async fn sprint1_single_stream_download_completes_and_persists() {
         url: format!("{}/file.bin", server.uri()),
         destination: dest.clone(),
         connections: ConnectionsOption::Auto,
+        mirrors: vec![],
+        expected_checksum: None,
+        duplicate_policy: Default::default(),
     };
     let job = engine.start_download(req, tx).await.unwrap();
 
@@ -189,6 +192,9 @@ async fn sprint2_segmented_download_uses_multiple_range_requests_and_is_byte_cor
         url: format!("{}/file.bin", server.uri()),
         destination: dest.clone(),
         connections: ConnectionsOption::Fixed(4),
+        mirrors: vec![],
+        expected_checksum: None,
+        duplicate_policy: Default::default(),
     };
     let job = engine.start_download(req, tx).await.unwrap();
 
@@ -234,6 +240,9 @@ async fn sprint2_segment_stealing_kicks_in_for_a_slow_segment() {
         url: format!("{}/file.bin", server.uri()),
         destination: dest.clone(),
         connections: ConnectionsOption::Fixed(4),
+        mirrors: vec![],
+        expected_checksum: None,
+        duplicate_policy: Default::default(),
     };
     let job = engine.start_download(req, tx).await.unwrap();
 
@@ -291,6 +300,9 @@ async fn sprint3_retries_a_transient_failure_without_corrupting_the_file() {
         url: format!("{}/file.bin", server.uri()),
         destination: dest.clone(),
         connections: ConnectionsOption::Fixed(3),
+        mirrors: vec![],
+        expected_checksum: None,
+        duplicate_policy: Default::default(),
     };
     let job = engine.start_download(req, tx).await.unwrap();
 
@@ -501,6 +513,9 @@ async fn sprint3_new_download_renames_instead_of_clobbering_existing_file() {
         url: format!("{}/file.bin", server.uri()),
         destination: dest.clone(),
         connections: ConnectionsOption::Auto,
+        mirrors: vec![],
+        expected_checksum: None,
+        duplicate_policy: Default::default(),
     };
     let job = engine.start_download(req, tx).await.unwrap();
 

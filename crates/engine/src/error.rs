@@ -8,6 +8,14 @@ pub enum EngineError {
     Io(#[from] std::io::Error),
     #[error("job not found: {0}")]
     JobNotFound(String),
+    #[error("checksum mismatch: expected {expected} ({algorithm}), got {actual}")]
+    ChecksumMismatch {
+        algorithm: String,
+        expected: String,
+        actual: String,
+    },
+    #[error("download skipped: duplicate of existing job {existing_job_id}")]
+    DuplicateSkipped { existing_job_id: String },
 }
 
 impl From<anyhow::Error> for EngineError {

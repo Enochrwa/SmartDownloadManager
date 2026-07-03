@@ -66,6 +66,10 @@ mod tests {
             last_modified: last_modified.map(String::from),
             error_class: None,
             error_message: None,
+            checksum_algorithm: None,
+            checksum_expected: None,
+            checksum_actual: None,
+            checksum_verified: false,
         }
     }
 
