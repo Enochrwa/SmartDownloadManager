@@ -7,14 +7,20 @@
   "types": "src/index.ts",
   "scripts": {
     "lint": "biome check .",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run"
   },
   "dependencies": {
-    "react": "^18.3.0"
+    "react": "^18.3.0",
+    "@sdm/common-types": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.5.0",
     "@types/react": "^18.3.0",
-    "vitest": "^2.1.0"
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "vitest": "^2.1.0",
+    "jsdom": "^25.0.0",
+    "@testing-library/react": "^16.0.0",
+    "@testing-library/jest-dom": "^6.5.0"
   }
 }

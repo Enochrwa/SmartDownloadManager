@@ -20,7 +20,7 @@ paid APIs. See `docs/LICENSING.md` for the full dependency/license inventory.
 
 ## Project status
 
-🚧 **Phase 1 (MVP), Sprint 1** — see [`docs/SPRINT_PLAN.md`](docs/SPRINT_PLAN.md)
+🚧 **Phase 1 (MVP), Sprint 6** — see [`docs/SPRINT_PLAN.md`](docs/SPRINT_PLAN.md)
 for exactly what's in flight and [`docs/FEATURES.md`](docs/FEATURES.md) for the
 full feature checklist and what's shipped so far.
 

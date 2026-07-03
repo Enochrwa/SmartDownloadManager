@@ -14,11 +14,13 @@ thiserror.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 rand.workspace = true
+chrono.workspace = true
 md-5.workspace = true
 sha1.workspace = true
 sha2.workspace = true
 crc32fast.workspace = true
 hex.workspace = true
+sqlx.workspace = true
 sdm-protocols = { path = "../protocols" }
 sdm-storage = { path = "../storage" }
 

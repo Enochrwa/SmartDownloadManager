@@ -646,6 +646,80 @@ pub async fn get_mirrors(pool: &SqlitePool, job_id: &str) -> anyhow::Result<Vec<
         .collect()
 }
 
+/// Delete a job and all its dependent rows (segments/chunks/mirrors cascade
+/// via `ON DELETE CASCADE`). Used by the desktop app to let a person clear
+/// completed/failed entries out of the queue view (Sprint 6).
+pub async fn delete_job(pool: &SqlitePool, id: &str) -> anyhow::Result<()> {
+    sqlx::query("DELETE FROM jobs WHERE id = ?1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// List jobs whose `status` is one of the given values, most-recently
+/// created first. Used on app startup to find jobs that were mid-flight
+/// (Downloading/Probing/Verifying) when the process last exited without a
+/// clean shutdown, so they can be automatically resumed (Sprint 6 session
+/// restore).
+pub async fn list_jobs_by_status(
+    pool: &SqlitePool,
+    statuses: &[JobStatus],
+) -> anyhow::Result<Vec<JobRecord>> {
+    let all = list_jobs(pool).await?;
+    Ok(all
+        .into_iter()
+        .filter(|j| statuses.contains(&j.status))
+        .collect())
+}
+
+/// Get one setting value by key (app-wide config: theme, download
+/// directory, backup directory, bandwidth limits, etc. — see
+/// `crates/engine::recovery` and the desktop app's settings commands).
+pub async fn get_setting(pool: &SqlitePool, key: &str) -> anyhow::Result<Option<String>> {
+    let row = sqlx::query("SELECT value FROM settings WHERE key = ?1")
+        .bind(key)
+        .fetch_optional(pool)
+        .await?;
+    Ok(match row {
+        Some(row) => Some(row.try_get("value")?),
+        None => None,
+    })
+}
+
+/// Set (insert or overwrite) one setting value by key.
+pub async fn set_setting(pool: &SqlitePool, key: &str, value: &str) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(key)
+    .bind(value)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Delete a setting by key. A no-op if the key doesn't exist.
+pub async fn delete_setting(pool: &SqlitePool, key: &str) -> anyhow::Result<()> {
+    sqlx::query("DELETE FROM settings WHERE key = ?1")
+        .bind(key)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Fetch every setting as a flat map — used to hydrate the desktop app's
+/// settings panel in one call.
+pub async fn list_settings(pool: &SqlitePool) -> anyhow::Result<Vec<(String, String)>> {
+    let rows = sqlx::query("SELECT key, value FROM settings ORDER BY key ASC")
+        .fetch_all(pool)
+        .await?;
+    rows.into_iter()
+        .map(|row| Ok((row.try_get("key")?, row.try_get("value")?)))
+        .collect()
+}
+
 /// Record a failed attempt against a mirror (used to deprioritize
 /// consistently-failing mirrors on subsequent segment retries).
 pub async fn record_mirror_failure(pool: &SqlitePool, id: &str) -> anyhow::Result<()> {
@@ -874,6 +948,87 @@ mod tests {
         let refreshed = get_mirrors(&pool, "job-1").await.unwrap();
         assert_eq!(refreshed[0].failure_count, 2);
         assert_eq!(refreshed[1].failure_count, 0);
+    }
+
+    #[tokio::test]
+    async fn settings_round_trip_and_delete() {
+        let pool = connect_in_memory().await.unwrap();
+        assert_eq!(get_setting(&pool, "theme").await.unwrap(), None);
+
+        set_setting(&pool, "theme", "dark").await.unwrap();
+        assert_eq!(
+            get_setting(&pool, "theme").await.unwrap(),
+            Some("dark".to_string())
+        );
+
+        // Overwrite on conflict.
+        set_setting(&pool, "theme", "light").await.unwrap();
+        assert_eq!(
+            get_setting(&pool, "theme").await.unwrap(),
+            Some("light".to_string())
+        );
+
+        set_setting(&pool, "download_dir", "/home/user/Downloads")
+            .await
+            .unwrap();
+        let all = list_settings(&pool).await.unwrap();
+        assert_eq!(all.len(), 2);
+
+        delete_setting(&pool, "theme").await.unwrap();
+        assert_eq!(get_setting(&pool, "theme").await.unwrap(), None);
+        assert_eq!(list_settings(&pool).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn delete_job_removes_row_and_dependents() {
+        let pool = connect_in_memory().await.unwrap();
+        insert_job(
+            &pool,
+            "job-1",
+            "https://example.com/file.zip",
+            "/tmp/file.zip",
+        )
+        .await
+        .unwrap();
+        replace_segments(&pool, "job-1", &[(0, 0, 99)])
+            .await
+            .unwrap();
+
+        delete_job(&pool, "job-1").await.unwrap();
+        assert!(get_job(&pool, "job-1").await.unwrap().is_none());
+        assert!(get_segments(&pool, "job-1").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_jobs_by_status_filters_correctly() {
+        let pool = connect_in_memory().await.unwrap();
+        insert_job(&pool, "job-1", "https://example.com/a.zip", "/tmp/a.zip")
+            .await
+            .unwrap();
+        insert_job(&pool, "job-2", "https://example.com/b.zip", "/tmp/b.zip")
+            .await
+            .unwrap();
+        insert_job(&pool, "job-3", "https://example.com/c.zip", "/tmp/c.zip")
+            .await
+            .unwrap();
+        set_job_status(&pool, "job-2", JobStatus::Downloading)
+            .await
+            .unwrap();
+        set_job_status(&pool, "job-3", JobStatus::Completed)
+            .await
+            .unwrap();
+
+        let mid_flight = list_jobs_by_status(&pool, &[JobStatus::Downloading, JobStatus::Probing])
+            .await
+            .unwrap();
+        assert_eq!(mid_flight.len(), 1);
+        assert_eq!(mid_flight[0].id, "job-2");
+
+        let queued = list_jobs_by_status(&pool, &[JobStatus::Queued])
+            .await
+            .unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].id, "job-1");
     }
 
     #[tokio::test]

@@ -116,11 +116,11 @@ Phases referenced here are defined in `ROADMAP.md`.
 - [ ] Filter, sort, regex search
 
 ## 14. User Interface — Phase 1–2
-- [ ] Dark/light mode — Phase 1
+- [x] Dark/light mode — Phase 1
 - [ ] Tabs, docking panels — Phase 2
 - [ ] Mini mode / floating monitor — Phase 2
-- [ ] Live speed graphs / download charts — Phase 1
-- [ ] Notifications, animations — Phase 1
+- [x] Live speed graphs / download charts — Phase 1
+- [x] Notifications, animations — Phase 1
 - [ ] Keyboard shortcuts — Phase 2
 - [ ] Touch support — Phase 3
 
@@ -169,11 +169,11 @@ Phases referenced here are defined in `ROADMAP.md`.
 - [ ] Localization, RTL languages
 
 ## 23. Recovery Features — Phase 1
-- [ ] Recover interrupted downloads
-- [ ] Recover corrupted databases
-- [ ] Repair queues
-- [ ] Recover temporary files
-- [ ] Automatic backups, session restore
+- [x] Recover interrupted downloads
+- [x] Recover corrupted databases
+- [x] Repair queues
+- [x] Recover temporary files
+- [x] Automatic backups, session restore
 
 ## 24. Enterprise Features — Phase 5
 - [ ] Policy management, audit logs
