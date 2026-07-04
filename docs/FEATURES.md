@@ -25,16 +25,16 @@ Phases referenced here are defined in `ROADMAP.md`.
 ## 2. Universal Protocol Support — Phase 1–3
 - [ ] HTTP/1.1, HTTP/2, HTTP/3 — Phase 1
 - [ ] HTTPS, TLS 1.2/1.3, certificate validation, pinned certs — Phase 1
-- [ ] FTP (download/upload/resume/folder listing) — Phase 1
-- [ ] FTPS — Phase 1
+- [x] FTP (download/upload/resume/folder listing) — Phase 1
+- [x] FTPS — Phase 1
 - [ ] SFTP — Phase 2
 - [ ] SCP — Phase 2
 - [ ] WebDAV — Phase 2
 - [ ] SMB — Phase 3
 - [ ] NFS — Phase 3
-- [ ] Magnet links / BitTorrent / DHT / peer exchange / trackers — Phase 2
+- [x] Magnet links / BitTorrent / DHT / peer exchange / trackers — Phase 2
 - [ ] Sequential download / torrent streaming — Phase 3
-- [ ] Piece verification — Phase 2
+- [x] Piece verification — Phase 2
 - [ ] Metalink (mirrors + hash verification) — Phase 2
 - [ ] HLS (m3u8) — Phase 2
 - [ ] MPEG-DASH (mpd) — Phase 2

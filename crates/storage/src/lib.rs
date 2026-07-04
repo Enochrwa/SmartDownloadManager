@@ -102,12 +102,42 @@ impl std::str::FromStr for SegmentStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum JobKind {
+    Http,
+    Ftp,
+    Torrent,
+}
+
+impl JobKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            JobKind::Http => "http",
+            JobKind::Ftp => "ftp",
+            JobKind::Torrent => "torrent",
+        }
+    }
+}
+
+impl std::str::FromStr for JobKind {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "http" => JobKind::Http,
+            "ftp" => JobKind::Ftp,
+            "torrent" => JobKind::Torrent,
+            other => anyhow::bail!("unknown job kind: {other}"),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobRecord {
     pub id: String,
     pub url: String,
     pub destination: String,
     pub status: JobStatus,
+    pub job_kind: JobKind,
     pub total_bytes: Option<i64>,
     pub downloaded_bytes: i64,
     pub connections: i64,
@@ -142,15 +172,30 @@ pub async fn insert_job(
     url: &str,
     destination: &str,
 ) -> anyhow::Result<()> {
+    insert_job_with_kind(pool, id, url, destination, JobKind::Http).await
+}
+
+/// Same as [`insert_job`], but for a non-HTTP job kind (FTP/FTPS or
+/// BitTorrent, Sprint 7). Kept as a separate function rather than adding a
+/// parameter to `insert_job` so every existing Sprint 1-6 call site keeps
+/// compiling unchanged.
+pub async fn insert_job_with_kind(
+    pool: &SqlitePool,
+    id: &str,
+    url: &str,
+    destination: &str,
+    kind: JobKind,
+) -> anyhow::Result<()> {
     let now = Utc::now().to_rfc3339();
     sqlx::query(
-        "INSERT INTO jobs (id, url, destination, status, downloaded_bytes, connections, supports_range, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, 0, 1, 0, ?5, ?5)",
+        "INSERT INTO jobs (id, url, destination, status, job_kind, downloaded_bytes, connections, supports_range, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0, 1, 0, ?6, ?6)",
     )
     .bind(id)
     .bind(url)
     .bind(destination)
     .bind(JobStatus::Queued.as_str())
+    .bind(kind.as_str())
     .bind(&now)
     .execute(pool)
     .await?;
@@ -235,7 +280,7 @@ pub async fn update_job_downloaded_bytes(
 
 pub async fn get_job(pool: &SqlitePool, id: &str) -> anyhow::Result<Option<JobRecord>> {
     let row = sqlx::query(
-        "SELECT id, url, destination, status, total_bytes, downloaded_bytes, connections,
+        "SELECT id, url, destination, status, job_kind, total_bytes, downloaded_bytes, connections,
                 supports_range, etag, last_modified, error_class, error_message,
                 checksum_algorithm, checksum_expected, checksum_actual, checksum_verified
          FROM jobs WHERE id = ?1",
@@ -250,7 +295,7 @@ pub async fn get_job(pool: &SqlitePool, id: &str) -> anyhow::Result<Option<JobRe
 
 pub async fn list_jobs(pool: &SqlitePool) -> anyhow::Result<Vec<JobRecord>> {
     let rows = sqlx::query(
-        "SELECT id, url, destination, status, total_bytes, downloaded_bytes, connections,
+        "SELECT id, url, destination, status, job_kind, total_bytes, downloaded_bytes, connections,
                 supports_range, etag, last_modified, error_class, error_message,
                 checksum_algorithm, checksum_expected, checksum_actual, checksum_verified
          FROM jobs ORDER BY created_at DESC",
@@ -263,11 +308,13 @@ pub async fn list_jobs(pool: &SqlitePool) -> anyhow::Result<Vec<JobRecord>> {
 
 fn row_to_job(row: sqlx::sqlite::SqliteRow) -> anyhow::Result<JobRecord> {
     let status_str: String = row.try_get("status")?;
+    let job_kind_str: String = row.try_get("job_kind")?;
     Ok(JobRecord {
         id: row.try_get("id")?,
         url: row.try_get("url")?,
         destination: row.try_get("destination")?,
         status: status_str.parse()?,
+        job_kind: job_kind_str.parse()?,
         total_bytes: row.try_get("total_bytes")?,
         downloaded_bytes: row.try_get("downloaded_bytes")?,
         connections: row.try_get("connections")?,
@@ -334,7 +381,7 @@ pub async fn find_duplicate_jobs(
 ) -> anyhow::Result<Vec<JobRecord>> {
     let like_pattern = format!("%/{destination_filename}");
     let rows = sqlx::query(
-        "SELECT id, url, destination, status, total_bytes, downloaded_bytes, connections,
+        "SELECT id, url, destination, status, job_kind, total_bytes, downloaded_bytes, connections,
                 supports_range, etag, last_modified, error_class, error_message,
                 checksum_algorithm, checksum_expected, checksum_actual, checksum_verified
          FROM jobs
@@ -744,6 +791,127 @@ pub async fn record_mirror_use(pool: &SqlitePool, id: &str) -> anyhow::Result<()
     Ok(())
 }
 
+/// Torrent-specific metadata for a `job_kind = 'torrent'` job (Sprint 7).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TorrentMetaRecord {
+    pub job_id: String,
+    pub info_hash: String,
+    pub magnet_uri: Option<String>,
+    pub torrent_file_path: Option<String>,
+    pub display_name: Option<String>,
+    pub piece_count: Option<i64>,
+    pub file_count: Option<i64>,
+    pub peer_count: i64,
+    pub sequential: bool,
+    /// JSON-encoded array of selected file indices, or `None` for "all
+    /// files" (mirrors `librqbit::AddTorrentOptions::only_files`).
+    pub only_files: Option<String>,
+}
+
+/// Insert the torrent metadata row for a job, once at creation time —
+/// mirrors [`set_job_expected_checksum`]'s "populate up front" pattern.
+#[allow(clippy::too_many_arguments)]
+pub async fn insert_torrent_meta(
+    pool: &SqlitePool,
+    job_id: &str,
+    info_hash: &str,
+    magnet_uri: Option<&str>,
+    torrent_file_path: Option<&str>,
+    display_name: Option<&str>,
+    sequential: bool,
+    only_files: Option<&str>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO torrent_meta (job_id, info_hash, magnet_uri, torrent_file_path, display_name, sequential, only_files)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    )
+    .bind(job_id)
+    .bind(info_hash)
+    .bind(magnet_uri)
+    .bind(torrent_file_path)
+    .bind(display_name)
+    .bind(sequential as i64)
+    .bind(only_files)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Refresh the swarm-derived fields (piece/file counts once metadata has
+/// resolved from the swarm, and the current peer count) as the download
+/// progresses.
+pub async fn update_torrent_swarm_info(
+    pool: &SqlitePool,
+    job_id: &str,
+    piece_count: Option<i64>,
+    file_count: Option<i64>,
+    peer_count: i64,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE torrent_meta SET piece_count = ?1, file_count = ?2, peer_count = ?3 WHERE job_id = ?4",
+    )
+    .bind(piece_count)
+    .bind(file_count)
+    .bind(peer_count)
+    .bind(job_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_torrent_meta(
+    pool: &SqlitePool,
+    job_id: &str,
+) -> anyhow::Result<Option<TorrentMetaRecord>> {
+    let row = sqlx::query(
+        "SELECT job_id, info_hash, magnet_uri, torrent_file_path, display_name,
+                piece_count, file_count, peer_count, sequential, only_files
+         FROM torrent_meta WHERE job_id = ?1",
+    )
+    .bind(job_id)
+    .fetch_optional(pool)
+    .await?;
+
+    let Some(row) = row else { return Ok(None) };
+    Ok(Some(TorrentMetaRecord {
+        job_id: row.try_get("job_id")?,
+        info_hash: row.try_get("info_hash")?,
+        magnet_uri: row.try_get("magnet_uri")?,
+        torrent_file_path: row.try_get("torrent_file_path")?,
+        display_name: row.try_get("display_name")?,
+        piece_count: row.try_get("piece_count")?,
+        file_count: row.try_get("file_count")?,
+        peer_count: row.try_get("peer_count")?,
+        sequential: row.try_get::<i64, _>("sequential")? != 0,
+        only_files: row.try_get("only_files")?,
+    }))
+}
+
+/// Look up a job by BitTorrent info-hash — the torrent analogue of
+/// duplicate detection by URL (Sprint 4's `find_duplicate_by_hash`), so
+/// re-adding the same magnet/`.torrent` doesn't start a second download.
+pub async fn find_job_by_info_hash(
+    pool: &SqlitePool,
+    info_hash: &str,
+) -> anyhow::Result<Option<JobRecord>> {
+    let row = sqlx::query(
+        "SELECT j.id, j.url, j.destination, j.status, j.job_kind, j.total_bytes, j.downloaded_bytes,
+                j.connections, j.supports_range, j.etag, j.last_modified, j.error_class, j.error_message,
+                j.checksum_algorithm, j.checksum_expected, j.checksum_actual, j.checksum_verified
+         FROM jobs j
+         JOIN torrent_meta t ON t.job_id = j.id
+         WHERE t.info_hash = ?1
+         ORDER BY j.created_at DESC
+         LIMIT 1",
+    )
+    .bind(info_hash)
+    .fetch_optional(pool)
+    .await?;
+
+    let Some(row) = row else { return Ok(None) };
+    Ok(Some(row_to_job(row)?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1084,5 +1252,99 @@ mod tests {
         .await
         .unwrap();
         assert!(none.is_empty());
+    }
+
+    #[tokio::test]
+    async fn http_jobs_default_to_http_kind() {
+        let pool = connect_in_memory().await.unwrap();
+        insert_job(&pool, "job-1", "https://example.com/f.zip", "/tmp/f.zip")
+            .await
+            .unwrap();
+        let job = get_job(&pool, "job-1").await.unwrap().unwrap();
+        assert_eq!(job.job_kind, JobKind::Http);
+    }
+
+    #[tokio::test]
+    async fn insert_job_with_kind_persists_ftp_and_torrent_kinds() {
+        let pool = connect_in_memory().await.unwrap();
+        insert_job_with_kind(
+            &pool,
+            "job-ftp",
+            "ftp://example.com/f.zip",
+            "/tmp/f.zip",
+            JobKind::Ftp,
+        )
+        .await
+        .unwrap();
+        insert_job_with_kind(
+            &pool,
+            "job-torrent",
+            "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "/tmp/downloads",
+            JobKind::Torrent,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            get_job(&pool, "job-ftp").await.unwrap().unwrap().job_kind,
+            JobKind::Ftp
+        );
+        assert_eq!(
+            get_job(&pool, "job-torrent")
+                .await
+                .unwrap()
+                .unwrap()
+                .job_kind,
+            JobKind::Torrent
+        );
+    }
+
+    #[tokio::test]
+    async fn torrent_meta_roundtrip_and_lookup_by_info_hash() {
+        let pool = connect_in_memory().await.unwrap();
+        let info_hash = "c12fe1c06bba254a9dc9f519b335aa7c1367a88a";
+        insert_job_with_kind(
+            &pool,
+            "job-1",
+            "magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a",
+            "/downloads",
+            JobKind::Torrent,
+        )
+        .await
+        .unwrap();
+        insert_torrent_meta(
+            &pool,
+            "job-1",
+            info_hash,
+            Some("magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a"),
+            None,
+            Some("ubuntu.iso"),
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let meta = get_torrent_meta(&pool, "job-1").await.unwrap().unwrap();
+        assert_eq!(meta.info_hash, info_hash);
+        assert_eq!(meta.display_name.as_deref(), Some("ubuntu.iso"));
+        assert!(meta.sequential);
+        assert_eq!(meta.peer_count, 0);
+
+        update_torrent_swarm_info(&pool, "job-1", Some(64), Some(1), 12)
+            .await
+            .unwrap();
+        let meta = get_torrent_meta(&pool, "job-1").await.unwrap().unwrap();
+        assert_eq!(meta.piece_count, Some(64));
+        assert_eq!(meta.peer_count, 12);
+
+        let found = find_job_by_info_hash(&pool, info_hash).await.unwrap();
+        assert_eq!(found.unwrap().id, "job-1");
+
+        let not_found = find_job_by_info_hash(&pool, "0000000000000000000000000000000000000000")
+            .await
+            .unwrap();
+        assert!(not_found.is_none());
     }
 }

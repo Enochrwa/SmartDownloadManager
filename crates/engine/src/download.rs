@@ -47,6 +47,10 @@ pub struct DownloadRequest {
 pub struct Engine {
     pool: SqlitePool,
     client: reqwest::Client,
+    /// Lazily created on first torrent job, since starting a `librqbit`
+    /// session spins up a DHT node and TCP/UDP listeners — work every
+    /// HTTP-only or FTP-only process shouldn't pay for.
+    torrent_engine: tokio::sync::OnceCell<sdm_torrent::TorrentEngine>,
 }
 
 impl Engine {
@@ -54,7 +58,82 @@ impl Engine {
         Engine {
             pool,
             client: sdm_protocols::build_client(),
+            torrent_engine: tokio::sync::OnceCell::new(),
         }
+    }
+
+    /// Start (or reuse) the shared `librqbit` session, rooted at
+    /// `default_output_folder`. Individual torrent jobs can still override
+    /// their output folder per-call.
+    async fn get_or_init_torrent_engine(
+        &self,
+        default_output_folder: &std::path::Path,
+    ) -> Result<&sdm_torrent::TorrentEngine, EngineError> {
+        self.torrent_engine
+            .get_or_try_init(|| async {
+                sdm_torrent::TorrentEngine::new(default_output_folder.to_path_buf())
+                    .await
+                    .map_err(EngineError::from)
+            })
+            .await
+    }
+
+    /// Start a new FTP/FTPS download (Sprint 7). See
+    /// `crate::ftp::FtpEngine` for why this isn't folded into
+    /// [`start_download`](Self::start_download): FTP has no segmented
+    /// multi-connection model the way HTTP does.
+    pub async fn start_ftp_download(
+        &self,
+        req: crate::ftp::FtpDownloadRequest,
+        progress: ProgressSender,
+    ) -> Result<Job, EngineError> {
+        crate::ftp::FtpEngine::new(&self.pool)
+            .start_download(req, progress)
+            .await
+    }
+
+    /// Resume a previously-started FTP job.
+    pub async fn resume_ftp_download(
+        &self,
+        job_id: String,
+        progress: ProgressSender,
+    ) -> Result<Job, EngineError> {
+        crate::ftp::FtpEngine::new(&self.pool)
+            .resume_download(job_id, progress)
+            .await
+    }
+
+    /// Start a new BitTorrent download from a magnet URI or `.torrent`
+    /// file path (Sprint 7). See `crate::torrent::TorrentJobRunner`.
+    pub async fn start_torrent_download(
+        &self,
+        req: crate::torrent::TorrentDownloadRequest,
+        progress: ProgressSender,
+    ) -> Result<Job, EngineError> {
+        let rqbit = self
+            .get_or_init_torrent_engine(&req.destination_folder)
+            .await?;
+        crate::torrent::TorrentJobRunner::new(&self.pool, rqbit)
+            .start_download(req, progress)
+            .await
+    }
+
+    /// Resume a previously-started torrent job.
+    pub async fn resume_torrent_download(
+        &self,
+        job_id: String,
+        progress: ProgressSender,
+    ) -> Result<Job, EngineError> {
+        let record = sdm_storage::get_job(&self.pool, &job_id)
+            .await
+            .map_err(EngineError::from)?
+            .ok_or_else(|| EngineError::JobNotFound(job_id.clone()))?;
+        let rqbit = self
+            .get_or_init_torrent_engine(std::path::Path::new(&record.destination))
+            .await?;
+        crate::torrent::TorrentJobRunner::new(&self.pool, rqbit)
+            .resume_download(job_id, progress)
+            .await
     }
 
     /// Check whether a prospective download looks like a duplicate of an

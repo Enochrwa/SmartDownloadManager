@@ -11,6 +11,10 @@ anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 futures-util.workspace = true
+# Sprint 7: FTP/FTPS carryover.
+suppaftp.workspace = true
+webpki-roots.workspace = true
+percent-encoding.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true

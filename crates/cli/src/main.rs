@@ -14,7 +14,8 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
 use sdm_engine::{
-    ConnectionsOption, DownloadRequest, DuplicatePolicy, Engine, ExpectedChecksum, ProgressEvent,
+    ConnectionsOption, DownloadRequest, DuplicatePolicy, Engine, ExpectedChecksum,
+    FtpDownloadRequest, ProgressEvent, TorrentDownloadRequest,
 };
 
 #[derive(Parser)]
@@ -51,6 +52,15 @@ enum Commands {
         /// (same URL, same destination filename, or same checksum).
         #[arg(long = "on-duplicate", default_value = "rename")]
         on_duplicate: String,
+        /// Torrent only: request best-effort in-order piece priority for
+        /// the first file (see docs/SPRINT_PLAN_PHASE2.md Sprint 7).
+        #[arg(long)]
+        sequential: bool,
+        /// Torrent only: comma-separated file indices to download (all
+        /// files if omitted). Run `sdm show <job-id>` after adding to see
+        /// the file list if you don't already know the indices.
+        #[arg(long = "only-files")]
+        only_files: Option<String>,
     },
     /// Resume a previously started job by ID.
     Resume { job_id: String },
@@ -96,6 +106,18 @@ fn default_destination(url: &str) -> String {
     }
 }
 
+/// Parse a `--only-files` value like `"0,2,5"` into file indices.
+fn parse_file_indices(spec: &str) -> anyhow::Result<Vec<usize>> {
+    spec.split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            s.parse::<usize>()
+                .map_err(|_| anyhow::anyhow!("invalid file index in --only-files: {s:?}"))
+        })
+        .collect()
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -119,82 +141,137 @@ async fn main() -> anyhow::Result<()> {
             mirrors,
             checksum,
             on_duplicate,
+            sequential,
+            only_files,
         } => {
-            let destination = PathBuf::from(output.unwrap_or_else(|| default_destination(&url)));
-            let connections = ConnectionsOption::parse(&connections)?;
-            let expected_checksum = checksum
-                .as_deref()
-                .map(ExpectedChecksum::parse)
-                .transpose()?;
-            let duplicate_policy = DuplicatePolicy::parse(&on_duplicate)?;
+            if sdm_torrent::looks_like_torrent_source(&url) {
+                let destination_folder = PathBuf::from(output.unwrap_or_else(|| ".".to_string()));
+                let only_files = only_files.as_deref().map(parse_file_indices).transpose()?;
 
-            if duplicate_policy != DuplicatePolicy::Overwrite {
-                let dupes = engine
-                    .check_duplicates(
-                        &url,
-                        &destination,
-                        expected_checksum.as_ref().map(|c| c.hex.as_str()),
-                    )
-                    .await?;
-                if let Some(existing) = dupes.first() {
-                    match duplicate_policy {
-                        DuplicatePolicy::Skip => {
-                            println!(
-                                "⚠ Skipping: looks like a duplicate of job {} ({})",
-                                existing.job.id, existing.job.destination
-                            );
-                            return Ok(());
-                        }
-                        DuplicatePolicy::Rename => {
-                            println!(
-                                "⚠ Duplicate of job {} detected ({}); saving alongside it as a new file",
-                                existing.job.id, existing.job.destination
-                            );
-                        }
-                        DuplicatePolicy::Overwrite => unreachable!(),
+                let (tx, rx) = sdm_engine::channel();
+                let bar_task = tokio::spawn(render_progress(rx));
+                let req = TorrentDownloadRequest {
+                    source: url,
+                    destination_folder,
+                    only_files,
+                    sequential,
+                };
+                let result = engine.start_torrent_download(req, tx).await;
+                let _ = bar_task.await;
+
+                match result {
+                    Ok(job) => println!("✓ Downloaded to {}", job.destination),
+                    Err(e) => {
+                        eprintln!("✗ Torrent download failed: {e}");
+                        std::process::exit(1);
                     }
                 }
-            }
+            } else if url.starts_with("ftp://") || url.starts_with("ftps://") {
+                let destination =
+                    PathBuf::from(output.unwrap_or_else(|| default_destination(&url)));
 
-            let (tx, rx) = sdm_engine::channel();
-            let bar_task = tokio::spawn(render_progress(rx));
+                let (tx, rx) = sdm_engine::channel();
+                let bar_task = tokio::spawn(render_progress(rx));
+                let req = FtpDownloadRequest { url, destination };
+                let result = engine.start_ftp_download(req, tx).await;
+                let _ = bar_task.await;
 
-            let req = DownloadRequest {
-                url,
-                mirrors,
-                destination,
-                connections,
-                expected_checksum,
-                duplicate_policy,
-            };
-            let result = engine.start_download(req, tx).await;
-            let _ = bar_task.await;
-
-            match result {
-                Ok(job) => {
-                    println!("✓ Downloaded to {}", job.destination);
-                    if let Some(actual) = &job.checksum_actual {
-                        let verified = if job.checksum_verified {
-                            "verified"
-                        } else {
-                            "computed, not compared"
-                        };
-                        println!(
-                            "  checksum ({}): {actual} [{verified}]",
-                            job.checksum_algorithm.as_deref().unwrap_or("sha256")
-                        );
+                match result {
+                    Ok(job) => println!("✓ Downloaded to {}", job.destination),
+                    Err(e) => {
+                        eprintln!("✗ FTP download failed: {e}");
+                        std::process::exit(1);
                     }
                 }
-                Err(e) => {
-                    eprintln!("✗ Download failed: {e}");
-                    std::process::exit(1);
+            } else {
+                let destination =
+                    PathBuf::from(output.unwrap_or_else(|| default_destination(&url)));
+                let connections = ConnectionsOption::parse(&connections)?;
+                let expected_checksum = checksum
+                    .as_deref()
+                    .map(ExpectedChecksum::parse)
+                    .transpose()?;
+                let duplicate_policy = DuplicatePolicy::parse(&on_duplicate)?;
+
+                if duplicate_policy != DuplicatePolicy::Overwrite {
+                    let dupes = engine
+                        .check_duplicates(
+                            &url,
+                            &destination,
+                            expected_checksum.as_ref().map(|c| c.hex.as_str()),
+                        )
+                        .await?;
+                    if let Some(existing) = dupes.first() {
+                        match duplicate_policy {
+                            DuplicatePolicy::Skip => {
+                                println!(
+                                    "⚠ Skipping: looks like a duplicate of job {} ({})",
+                                    existing.job.id, existing.job.destination
+                                );
+                                return Ok(());
+                            }
+                            DuplicatePolicy::Rename => {
+                                println!(
+                                    "⚠ Duplicate of job {} detected ({}); saving alongside it as a new file",
+                                    existing.job.id, existing.job.destination
+                                );
+                            }
+                            DuplicatePolicy::Overwrite => unreachable!(),
+                        }
+                    }
+                }
+
+                let (tx, rx) = sdm_engine::channel();
+                let bar_task = tokio::spawn(render_progress(rx));
+
+                let req = DownloadRequest {
+                    url,
+                    mirrors,
+                    destination,
+                    connections,
+                    expected_checksum,
+                    duplicate_policy,
+                };
+                let result = engine.start_download(req, tx).await;
+                let _ = bar_task.await;
+
+                match result {
+                    Ok(job) => {
+                        println!("✓ Downloaded to {}", job.destination);
+                        if let Some(actual) = &job.checksum_actual {
+                            let verified = if job.checksum_verified {
+                                "verified"
+                            } else {
+                                "computed, not compared"
+                            };
+                            println!(
+                                "  checksum ({}): {actual} [{verified}]",
+                                job.checksum_algorithm.as_deref().unwrap_or("sha256")
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("✗ Download failed: {e}");
+                        std::process::exit(1);
+                    }
                 }
             }
         }
         Commands::Resume { job_id } => {
+            let kind = sdm_storage::get_job(&pool, &job_id)
+                .await?
+                .map(|j| j.job_kind)
+                .unwrap_or(sdm_storage::JobKind::Http);
+
             let (tx, rx) = sdm_engine::channel();
             let bar_task = tokio::spawn(render_progress(rx));
-            let result = engine.resume_download(&job_id, tx).await;
+            let result = match kind {
+                sdm_storage::JobKind::Http => engine.resume_download(&job_id, tx).await,
+                sdm_storage::JobKind::Ftp => engine.resume_ftp_download(job_id.clone(), tx).await,
+                sdm_storage::JobKind::Torrent => {
+                    engine.resume_torrent_download(job_id.clone(), tx).await
+                }
+            };
             let _ = bar_task.await;
 
             match result {
@@ -212,8 +289,9 @@ async fn main() -> anyhow::Result<()> {
             }
             for j in jobs {
                 println!(
-                    "{}  {:<12}  {:>3}%  {}",
+                    "{}  {:<8}  {:<12}  {:>3}%  {}",
                     j.id,
+                    j.job_kind.as_str(),
                     j.status.as_str(),
                     progress_pct(j.downloaded_bytes, j.total_bytes),
                     j.url
@@ -223,6 +301,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Show { job_id } => match sdm_storage::get_job(&pool, &job_id).await? {
             Some(j) => {
                 println!("id:          {}", j.id);
+                println!("kind:        {}", j.job_kind.as_str());
                 println!("url:         {}", j.url);
                 println!("destination: {}", j.destination);
                 println!("status:      {}", j.status.as_str());
@@ -231,6 +310,18 @@ async fn main() -> anyhow::Result<()> {
                     progress_pct(j.downloaded_bytes, j.total_bytes)
                 );
                 println!("connections: {}", j.connections);
+                if j.job_kind == sdm_storage::JobKind::Torrent {
+                    if let Some(meta) = sdm_storage::get_torrent_meta(&pool, &job_id).await? {
+                        println!("info-hash:   {}", meta.info_hash);
+                        if let Some(name) = &meta.display_name {
+                            println!("name:        {name}");
+                        }
+                        println!("peers:       {}", meta.peer_count);
+                        if let Some(pieces) = meta.piece_count {
+                            println!("pieces:      {pieces}");
+                        }
+                    }
+                }
                 if let Some(algo) = &j.checksum_algorithm {
                     if let Some(actual) = &j.checksum_actual {
                         println!(
