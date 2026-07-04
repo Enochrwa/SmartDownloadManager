@@ -1,11 +1,11 @@
 # Roadmap
 
 Five phases. Each phase is a set of 2-week sprints (see `SPRINT_PLAN.md` for
-Phase 1's sprint-by-sprint breakdown in full detail; later phases are scoped at
-the epic level here and will get their own detailed sprint plans as we approach
-them).
+Phase 1's sprint-by-sprint breakdown and `SPRINT_PLAN_PHASE2.md` for Phase 2's;
+later phases are scoped at the epic level here and will get their own detailed
+sprint plans as we approach them).
 
-## Phase 1 — MVP Core Engine (Sprints 1–6, ~12 weeks)
+## Phase 1 — MVP Core Engine (Sprints 1–6, ~12 weeks) — complete
 Goal: a working, cross-platform desktop downloader that beats a basic download
 manager on HTTP/FTP — multi-connection, resumable, verified, queued, bandwidth
 limited — with a CLI and REST API on the same engine.
@@ -14,7 +14,9 @@ limited — with a CLI and REST API on the same engine.
 Goal: BitTorrent/magnet, SFTP/SCP/WebDAV, Metalink, HLS/DASH streaming capture,
 yt-dlp/FFmpeg video downloading, browser extensions (Chrome/Firefox/Edge/Brave/
 Opera/Vivaldi), proxy/DoH/IPv6 networking, authentication (cookies/tokens/OAuth),
-encrypted credential storage, search.
+encrypted credential storage, search. See `SPRINT_PLAN_PHASE2.md` for the full
+sprint-by-sprint breakdown, including the Phase 1 FTP/FTPS carryover closed out
+in Sprint 7.
 
 ## Phase 3 — Power Features (Sprints 13–18, ~12 weeks)
 Goal: scheduling, file management automation, analytics dashboards, rules
