@@ -381,7 +381,7 @@ pub async fn find_duplicate_jobs(
 ) -> anyhow::Result<Vec<JobRecord>> {
     let like_pattern = format!("%/{destination_filename}");
     let rows = sqlx::query(
-        "SELECT id, url, destination, status, total_bytes, downloaded_bytes, connections,
+        "SELECT id, url, destination, status, job_kind, total_bytes, downloaded_bytes, connections,
                 supports_range, etag, last_modified, error_class, error_message,
                 checksum_algorithm, checksum_expected, checksum_actual, checksum_verified
          FROM jobs

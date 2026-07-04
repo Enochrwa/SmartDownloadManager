@@ -227,6 +227,7 @@ impl FtpSession {
 
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
+            .truncate(false)
             .write(true)
             .open(dest)
             .await?;
@@ -342,17 +343,17 @@ mod tests {
 
     #[test]
     fn parses_plain_ftp_url_with_credentials() {
-        // Built via format! (rather than a literal `user:pass@host` string)
-        // so this obviously-fake test fixture doesn't look like a real
-        // leaked credential to secret scanners.
-        let (user, pass) = ("alice", "s3cr3t");
+        // Deliberately non-credential-shaped placeholders (no real word,
+        // no realistic password entropy) so this test fixture isn't
+        // mistaken for a leaked secret by scanners like GitGuardian.
+        let (user, pass) = ("testuser01", "placeholder-not-a-secret");
         let url =
             FtpUrl::parse(&format!("ftp://{user}:{pass}@ftp.example.com/pub/file.zip")).unwrap();
         assert!(!url.secure);
         assert_eq!(url.host, "ftp.example.com");
         assert_eq!(url.port, 21);
-        assert_eq!(url.user, "alice");
-        assert_eq!(url.password, "s3cr3t");
+        assert_eq!(url.user, "testuser01");
+        assert_eq!(url.password, "placeholder-not-a-secret");
         assert_eq!(url.path, "pub/file.zip");
     }
 
@@ -381,10 +382,10 @@ mod tests {
 
     #[test]
     fn decodes_percent_encoded_userinfo_and_path() {
-        let (user, pass) = ("user%40corp", "p%40ss");
+        let (user, pass) = ("account%40corp", "not%40secret");
         let url = FtpUrl::parse(&format!("ftp://{user}:{pass}@host/dir%20name/file.txt")).unwrap();
-        assert_eq!(url.user, "user@corp");
-        assert_eq!(url.password, "p@ss");
+        assert_eq!(url.user, "account@corp");
+        assert_eq!(url.password, "not@secret");
         assert_eq!(url.path, "dir name/file.txt");
     }
 

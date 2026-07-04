@@ -58,6 +58,7 @@ mod tests {
             url: "https://example.com/f".into(),
             destination: "/tmp/f".into(),
             status: sdm_storage::JobStatus::Paused,
+            job_kind: sdm_storage::JobKind::Http,
             total_bytes: total,
             downloaded_bytes: 0,
             connections: 4,

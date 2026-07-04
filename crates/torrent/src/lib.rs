@@ -153,12 +153,16 @@ impl TorrentEngine {
 /// Failure just means the torrent downloads in `librqbit`'s normal
 /// rarest-first order instead — never fatal to the job.
 fn try_enable_sequential_priority(handle: &TorrentHandleInner) {
-    let Some(live) = handle.live() else {
+    if handle.live().is_none() {
         // Torrent hasn't reached the Live state yet (still fetching
         // metadata from a magnet link); nothing to prioritize yet.
         return;
-    };
-    match live.stream(0) {
+    }
+    // `stream` lives on `ManagedTorrent` itself (taking `Arc<Self>`), not on
+    // `TorrentStateLive` — the `live()` check above just gates on the
+    // torrent having reached a state where its metadata (and thus file
+    // layout) is resolved.
+    match handle.clone().stream(0) {
         Ok(stream) => {
             // Registering the stream is what affects piece ordering; we
             // don't need to read from it ourselves. Leak it for the
