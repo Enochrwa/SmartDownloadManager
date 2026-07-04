@@ -23,6 +23,7 @@ hex.workspace = true
 sqlx.workspace = true
 sdm-protocols = { path = "../protocols" }
 sdm-storage = { path = "../storage" }
+sdm-torrent = { path = "../torrent" }
 
 [dev-dependencies]
 wiremock.workspace = true

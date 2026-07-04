@@ -47,9 +47,16 @@ crc32fast = "1"
 hex = "0.4"
 # Locked in docs/TECH_DECISIONS.md — wired up starting crates/torrent (Phase 2, Sprint 7)
 # and crates/protocols' HLS/DASH modules (Phase 2, Sprint 9).
-librqbit = "7"
+librqbit = "8"
 m3u8-rs = "6"
 dash-mpd-rs = "0.17"
+# Sprint 7: FTP/FTPS carryover (docs/SPRINT_PLAN_PHASE2.md "Phase 1 carryover").
+# tokio-rustls-ring pulls suppaftp's own tokio_rustls/rustls re-exports so our
+# FTPS connector stays on the exact same rustls build as the rest of suppaftp.
+suppaftp = { version = "10", default-features = false, features = ["tokio", "tokio-rustls-ring"] }
+webpki-roots = "0.26"
+percent-encoding = "2"
+data-encoding = "2"
 
 [profile.release]
 opt-level = 3

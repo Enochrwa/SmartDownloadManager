@@ -4,6 +4,10 @@ pub enum EngineError {
     Storage(#[source] anyhow::Error),
     #[error(transparent)]
     Protocol(#[from] sdm_protocols::ProtoError),
+    #[error(transparent)]
+    Ftp(#[from] sdm_protocols::ftp::FtpProtoError),
+    #[error(transparent)]
+    Torrent(#[from] sdm_torrent::TorrentError),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("job not found: {0}")]

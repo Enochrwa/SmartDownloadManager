@@ -10,6 +10,7 @@ pub struct Job {
     pub url: String,
     pub destination: String,
     pub status: JobStatus,
+    pub job_kind: JobKind,
     pub total_bytes: Option<u64>,
     pub downloaded_bytes: u64,
     pub connections: u32,
@@ -28,6 +29,36 @@ pub enum JobStatus {
     Verifying,
     Completed,
     Failed,
+}
+
+/// Which engine drives this job. HTTP keeps using the Sprint 1-6
+/// segmented/single-stream path; FTP and Torrent are Sprint 7 additions —
+/// see `crates/engine::ftp` and `crates/engine::torrent`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum JobKind {
+    Http,
+    Ftp,
+    Torrent,
+}
+
+impl From<sdm_storage::JobKind> for JobKind {
+    fn from(k: sdm_storage::JobKind) -> Self {
+        match k {
+            sdm_storage::JobKind::Http => JobKind::Http,
+            sdm_storage::JobKind::Ftp => JobKind::Ftp,
+            sdm_storage::JobKind::Torrent => JobKind::Torrent,
+        }
+    }
+}
+
+impl From<JobKind> for sdm_storage::JobKind {
+    fn from(k: JobKind) -> Self {
+        match k {
+            JobKind::Http => sdm_storage::JobKind::Http,
+            JobKind::Ftp => sdm_storage::JobKind::Ftp,
+            JobKind::Torrent => sdm_storage::JobKind::Torrent,
+        }
+    }
 }
 
 impl From<sdm_storage::JobStatus> for JobStatus {
@@ -51,6 +82,7 @@ impl From<sdm_storage::JobRecord> for Job {
             url: r.url,
             destination: r.destination,
             status: r.status.into(),
+            job_kind: r.job_kind.into(),
             total_bytes: r.total_bytes.map(|v| v as u64),
             downloaded_bytes: r.downloaded_bytes as u64,
             connections: r.connections as u32,

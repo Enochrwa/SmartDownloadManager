@@ -51,6 +51,48 @@ jobs:
       - name: Test (nextest)
         run: cargo nextest run --workspace
 
+  ftp-integration:
+    name: FTP/FTPS integration (Sprint 7)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-ftp-${{ hashFiles('**/Cargo.lock') }}
+      - name: Start local FTP server (pyftpdlib)
+        run: |
+          pip install pyftpdlib
+          mkdir -p /tmp/ftp_root
+          cat > /tmp/ftp_server.py <<'EOF'
+          from pyftpdlib.authorizers import DummyAuthorizer
+          from pyftpdlib.handlers import FTPHandler
+          from pyftpdlib.servers import FTPServer
+          authorizer = DummyAuthorizer()
+          authorizer.add_user("test", "test", "/tmp/ftp_root", perm="elradfmwMT")
+          handler = FTPHandler
+          handler.authorizer = authorizer
+          handler.passive_ports = range(60000, 60100)
+          server = FTPServer(("127.0.0.1", 2121), handler)
+          server.serve_forever()
+          EOF
+          python /tmp/ftp_server.py &
+          sleep 2
+      - name: Run FTP integration tests
+        env:
+          SDM_TEST_FTP_ADDR: 127.0.0.1:2121
+          SDM_TEST_FTP_USER: test
+          SDM_TEST_FTP_PASS: test
+        run: cargo test -p sdm-protocols --test ftp_integration -- --nocapture
+
   license-check:
     name: License compliance (cargo-deny)
     runs-on: ubuntu-latest

@@ -19,3 +19,4 @@ indicatif.workspace = true
 sdm-engine = { path = "../engine" }
 sdm-storage = { path = "../storage" }
 sdm-api-types = { path = "../api-types" }
+sdm-torrent = { path = "../torrent" }
