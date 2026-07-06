@@ -66,8 +66,7 @@ pub async fn fetch_and_parse(
             .map_err(|e| EngineError::Other(format!("failed to read {}: {e}", path.display())))?,
     };
 
-    sdm_protocols::metalink::parse(&text)
-        .map_err(|e| EngineError::Other(format!("failed to parse Metalink document: {e}")))
+    sdm_protocols::metalink::parse(&text).map_err(EngineError::Protocol)
 }
 
 /// Translate one Metalink `<file>` entry into an ordinary
