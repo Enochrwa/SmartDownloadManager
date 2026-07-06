@@ -152,6 +152,18 @@ pub fn parse(xml: &str) -> Result<Vec<MetalinkFile>, ProtoError> {
     Ok(files)
 }
 
+/// Extract the text content of the first `<[prefix:]tag>text</[prefix:]tag>`
+/// element found in `xml` — built on [`split_on_local_tag`] rather than a
+/// separate scan, since a "first match's body" is just its first result.
+/// (`crate::webdav` has its own copy of this same small helper rather than
+/// sharing one across protocol modules — same here.)
+fn extract_local_tag_text<'a>(xml: &'a str, local_name: &str) -> Option<&'a str> {
+    split_on_local_tag(xml, local_name)
+        .into_iter()
+        .next()
+        .map(|(body, _)| body)
+}
+
 /// Find the byte offset of the next `<[prefix:]tag` opening occurrence,
 /// matching on local name regardless of namespace prefix (mirrors
 /// `crate::webdav`'s tag scanner).
