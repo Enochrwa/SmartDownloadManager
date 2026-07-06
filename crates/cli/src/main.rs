@@ -319,7 +319,7 @@ async fn main() -> anyhow::Result<()> {
 
                 let (tx, rx) = sdm_engine::channel();
                 let bar_task = tokio::spawn(render_progress(rx));
-                let req = sdm_engine::HlsDownloadRequest {
+                let req = HlsDownloadRequest {
                     url,
                     destination,
                     variant,
@@ -347,7 +347,7 @@ async fn main() -> anyhow::Result<()> {
 
                 let (tx, rx) = sdm_engine::channel();
                 let bar_task = tokio::spawn(render_progress(rx));
-                let req = sdm_engine::DashDownloadRequest {
+                let req = DashDownloadRequest {
                     url,
                     destination_dir,
                     file_stem,

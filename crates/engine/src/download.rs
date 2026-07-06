@@ -61,14 +61,6 @@ impl Engine {
         &self.pool
     }
 
-    /// Shared HTTP client access for manifest-based job-orchestration
-    /// modules (`crate::hls`, `crate::dash`) that fetch playlists/
-    /// manifests and segments directly rather than going through
-    /// [`Engine::run`]'s segmented-download path.
-    pub(crate) fn client(&self) -> &reqwest::Client {
-        &self.client
-    }
-
     pub fn new(pool: SqlitePool) -> Self {
         Engine {
             pool,
