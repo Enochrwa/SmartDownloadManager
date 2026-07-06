@@ -380,12 +380,33 @@ impl Engine {
             job_id: job_id.clone(),
         });
 
-        let primary_url = mirror_set.primary().to_string();
-        let probe_result = sdm_protocols::probe(&self.client, &primary_url).await;
+        // Probe every mirror in ranked order until one responds
+        // successfully, rather than giving up as soon as the
+        // fastest-ranked mirror fails — the same "auto-switch on
+        // failure" behavior segment fetches already get (see
+        // `crate::mirrors` module docs), just applied to the initial
+        // probe too.
+        let mut probe_result = None;
+        for url in mirror_set.urls() {
+            match sdm_protocols::probe(&self.client, url).await {
+                Ok(info) => {
+                    probe_result = Some(Ok(info));
+                    break;
+                }
+                Err(e) => probe_result = Some(Err(e)),
+            }
+        }
+        let probe_result = probe_result
+            .expect("mirror_set is non-empty")
+            .map_err(EngineError::Protocol);
         if let Err(e) = &probe_result {
+            let class = match e {
+                EngineError::Protocol(p) => p.class(),
+                _ => ErrorClass::Other,
+            };
             let _ = progress.send(ProgressEvent::Failed {
                 job_id: job_id.clone(),
-                error_class: e.class().as_str().to_string(),
+                error_class: class.as_str().to_string(),
                 message: e.to_string(),
             });
         }
