@@ -17,6 +17,7 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 indicatif.workspace = true
 sdm-engine = { path = "../engine" }
+sdm-protocols = { path = "../protocols" }
 sdm-storage = { path = "../storage" }
 sdm-api-types = { path = "../api-types" }
 sdm-torrent = { path = "../torrent" }

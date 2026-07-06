@@ -54,6 +54,13 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Shared pool access for sibling job-orchestration modules
+    /// (`crate::webdav`) that need to insert/update job rows themselves
+    /// before delegating to [`Engine::run`].
+    pub(crate) fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     pub fn new(pool: SqlitePool) -> Self {
         Engine {
             pool,
@@ -283,7 +290,13 @@ impl Engine {
         .await
     }
 
-    async fn run(
+    /// `pub(crate)` (not private) so `crate::webdav`'s WebDAV job
+    /// orchestration (Sprint 8) can drive the same segmented-download
+    /// core after inserting its own job row with `JobKind::WebDav` —
+    /// WebDAV's `GET`+`Range` behavior is byte-for-byte identical to
+    /// HTTP's, so re-implementing this ~300-line function for WebDAV
+    /// would be pure duplication. See `crate::webdav` module docs.
+    pub(crate) async fn run(
         &self,
         job_id: String,
         mirror_set: MirrorSet,

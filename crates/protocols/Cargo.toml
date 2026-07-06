@@ -15,10 +15,16 @@ futures-util.workspace = true
 suppaftp.workspace = true
 webpki-roots.workspace = true
 percent-encoding.workspace = true
+# Sprint 8: SFTP/SCP (russh) + WebDAV (PROPFIND/PUT over the existing
+# reqwest stack, no new HTTP dependency needed).
+russh.workspace = true
+russh-sftp.workspace = true
+base64.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true
 tempfile.workspace = true
+rand = "0.10"
 
 [lib]
 name = "sdm_protocols"

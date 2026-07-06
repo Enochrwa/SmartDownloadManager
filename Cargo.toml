@@ -57,6 +57,15 @@ suppaftp = { version = "10", default-features = false, features = ["tokio", "tok
 webpki-roots = "0.26"
 percent-encoding = "2"
 data-encoding = "2"
+# Sprint 8: SFTP/SCP (russh, Apache-2.0, per docs/LICENSING.md) + WebDAV
+# (reuses the reqwest/rustls stack already pulled in for HTTP — WebDAV is
+# just HTTP with PROPFIND/PUT verbs, docs/SPRINT_PLAN_PHASE2.md Sprint 8).
+# "ring" feature to stay on the same rustls crypto backend as
+# `tokio-rustls-ring`/webpki-roots above, rather than pulling in aws-lc-rs
+# as a second crypto stack.
+russh = { version = "0.62", features = ["ring"] }
+russh-sftp = "2"
+base64 = "0.22"
 
 [profile.release]
 opt-level = 3

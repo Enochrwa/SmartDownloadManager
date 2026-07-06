@@ -107,6 +107,15 @@ pub enum JobKind {
     Http,
     Ftp,
     Torrent,
+    /// Sprint 8.
+    Sftp,
+    /// Sprint 8. Non-resumable (see `crates/protocols::scp` module docs).
+    Scp,
+    /// Sprint 8. Stored as a translated `http(s)://` URL under the hood —
+    /// see `crates/engine::webdav` — this variant exists purely so
+    /// `sdm status`/`sdm list` display the protocol the user actually
+    /// asked for.
+    WebDav,
 }
 
 impl JobKind {
@@ -115,6 +124,9 @@ impl JobKind {
             JobKind::Http => "http",
             JobKind::Ftp => "ftp",
             JobKind::Torrent => "torrent",
+            JobKind::Sftp => "sftp",
+            JobKind::Scp => "scp",
+            JobKind::WebDav => "webdav",
         }
     }
 }
@@ -126,6 +138,9 @@ impl std::str::FromStr for JobKind {
             "http" => JobKind::Http,
             "ftp" => JobKind::Ftp,
             "torrent" => JobKind::Torrent,
+            "sftp" => JobKind::Sftp,
+            "scp" => JobKind::Scp,
+            "webdav" => JobKind::WebDav,
             other => anyhow::bail!("unknown job kind: {other}"),
         })
     }

@@ -8,6 +8,8 @@
 //!   targeted repair, mirror support, duplicate detection.
 //! - Sprint 6: recovery (corrupted-database repair, orphaned temp-file
 //!   cleanup, automatic backups, session restore) for the desktop app.
+//! - Sprint 7: FTP/FTPS (Phase 1 carryover) and BitTorrent/magnet.
+//! - Sprint 8: SFTP (multi-channel segmented), SCP, and WebDAV.
 
 pub mod chunking;
 pub mod download;
@@ -22,8 +24,10 @@ pub mod recovery;
 pub mod resume;
 pub mod retry;
 pub mod segment;
+pub mod ssh;
 pub mod torrent;
 pub mod verify;
+pub mod webdav;
 
 pub use chunking::{find_corrupt_chunks, repair_chunk, CorruptChunk};
 pub use download::{DownloadRequest, Engine};
@@ -35,5 +39,7 @@ pub use mirrors::MirrorSet;
 pub use progress::{channel, ProgressEvent, ProgressReceiver, ProgressSender};
 pub use recovery::{RepairAction, RepairReport};
 pub use segment::ConnectionsOption;
+pub use ssh::{ScpDownloadRequest, SftpDownloadRequest, SshConnectionOptions, SshEngine};
 pub use torrent::TorrentDownloadRequest;
 pub use verify::{verify_file, ChecksumAlgorithm, ExpectedChecksum};
+pub use webdav::{WebDavDownloadRequest, WebDavEngine};
