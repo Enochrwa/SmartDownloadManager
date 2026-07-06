@@ -155,10 +155,7 @@ fn find_local_tag_close(xml: &str, local_name: &str) -> Option<(usize, usize)> {
 fn split_on_local_tag<'a>(xml: &'a str, local_name: &str) -> Vec<&'a str> {
     let mut out = Vec::new();
     let mut rest = xml;
-    loop {
-        let Some(open_start) = find_local_tag_open(rest, local_name) else {
-            break;
-        };
+    while let Some(open_start) = find_local_tag_open(rest, local_name) {
         let after_open = &rest[open_start..];
         let Some(tag_end) = after_open.find('>') else {
             break;
