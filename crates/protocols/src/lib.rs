@@ -6,9 +6,12 @@
 //! and MPEG-DASH (via `dash-mpd-rs`) land Phase 2, Sprint 9 — see
 //! docs/SPRINT_PLAN_PHASE2.md and docs/TECH_DECISIONS.md §5.
 
+pub mod dash;
 pub mod error;
 pub mod ftp;
+pub mod hls;
 pub mod http;
+pub mod metalink;
 pub mod scp;
 pub mod sftp;
 pub mod ssh;

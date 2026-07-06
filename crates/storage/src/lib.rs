@@ -116,6 +116,12 @@ pub enum JobKind {
     /// `sdm status`/`sdm list` display the protocol the user actually
     /// asked for.
     WebDav,
+    /// Sprint 9. HLS (`.m3u8`) — see `crates/engine::hls`.
+    Hls,
+    /// Sprint 9. MPEG-DASH (`.mpd`) — see `crates/engine::dash`. Metalink
+    /// deliberately has *no* variant here: it resolves to an ordinary
+    /// `Http` job with mirrors + a checksum (see 0004_sprint9.sql).
+    Dash,
 }
 
 impl JobKind {
@@ -127,6 +133,8 @@ impl JobKind {
             JobKind::Sftp => "sftp",
             JobKind::Scp => "scp",
             JobKind::WebDav => "webdav",
+            JobKind::Hls => "hls",
+            JobKind::Dash => "dash",
         }
     }
 }
@@ -141,6 +149,8 @@ impl std::str::FromStr for JobKind {
             "sftp" => JobKind::Sftp,
             "scp" => JobKind::Scp,
             "webdav" => JobKind::WebDav,
+            "hls" => JobKind::Hls,
+            "dash" => JobKind::Dash,
             other => anyhow::bail!("unknown job kind: {other}"),
         })
     }
@@ -925,6 +935,171 @@ pub async fn find_job_by_info_hash(
 
     let Some(row) = row else { return Ok(None) };
     Ok(Some(row_to_job(row)?))
+}
+
+/// Manifest-based job metadata (Sprint 9: HLS/DASH). Mirrors
+/// [`TorrentMetaRecord`]'s "one row per job, populated up front /
+/// refreshed as selection happens" pattern.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManifestMetaRecord {
+    pub job_id: String,
+    pub manifest_kind: String,
+    pub manifest_url: String,
+    pub media_playlist_url: Option<String>,
+    pub selected_variant: Option<String>,
+    pub video_representation_id: Option<String>,
+    pub audio_representation_id: Option<String>,
+    pub is_live: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn insert_manifest_meta(
+    pool: &SqlitePool,
+    job_id: &str,
+    manifest_kind: &str,
+    manifest_url: &str,
+    media_playlist_url: Option<&str>,
+    selected_variant: Option<&str>,
+    video_representation_id: Option<&str>,
+    audio_representation_id: Option<&str>,
+    is_live: bool,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO manifest_meta (job_id, manifest_kind, manifest_url, media_playlist_url,
+                                     selected_variant, video_representation_id, audio_representation_id, is_live)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    )
+    .bind(job_id)
+    .bind(manifest_kind)
+    .bind(manifest_url)
+    .bind(media_playlist_url)
+    .bind(selected_variant)
+    .bind(video_representation_id)
+    .bind(audio_representation_id)
+    .bind(is_live as i64)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_manifest_meta(
+    pool: &SqlitePool,
+    job_id: &str,
+) -> anyhow::Result<Option<ManifestMetaRecord>> {
+    let row = sqlx::query(
+        "SELECT job_id, manifest_kind, manifest_url, media_playlist_url, selected_variant,
+                video_representation_id, audio_representation_id, is_live
+         FROM manifest_meta WHERE job_id = ?1",
+    )
+    .bind(job_id)
+    .fetch_optional(pool)
+    .await?;
+
+    let Some(row) = row else { return Ok(None) };
+    Ok(Some(ManifestMetaRecord {
+        job_id: row.try_get("job_id")?,
+        manifest_kind: row.try_get("manifest_kind")?,
+        manifest_url: row.try_get("manifest_url")?,
+        media_playlist_url: row.try_get("media_playlist_url")?,
+        selected_variant: row.try_get("selected_variant")?,
+        video_representation_id: row.try_get("video_representation_id")?,
+        audio_representation_id: row.try_get("audio_representation_id")?,
+        is_live: row.try_get::<i64, _>("is_live")? != 0,
+    }))
+}
+
+/// One resolved segment (init or media) for one track of a manifest-based
+/// job.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManifestSegmentRecord {
+    pub id: String,
+    pub job_id: String,
+    pub track: String,
+    pub kind: String,
+    pub seq: i64,
+    pub url: String,
+    pub downloaded: bool,
+}
+
+/// Replace every segment row for `(job_id, track)` with a freshly
+/// resolved list — used at job-start time once the manifest has been
+/// parsed and segment URLs resolved. Idempotent re-runs (e.g. resuming
+/// after a manifest re-fetch found no changes) just rewrite the same
+/// rows; `downloaded` flags for URLs that didn't change position are not
+/// preserved across a full replace, matching [`replace_segments`]'s
+/// (Sprint 2) same "authoritative re-plan" semantics — callers that want
+/// to preserve completed-segment state across a resume should check
+/// [`get_manifest_segments`] before calling this again.
+pub async fn replace_manifest_segments(
+    pool: &SqlitePool,
+    job_id: &str,
+    track: &str,
+    segments: &[(String, i64, String)], // (kind, seq, url)
+) -> anyhow::Result<()> {
+    sqlx::query("DELETE FROM manifest_segments WHERE job_id = ?1 AND track = ?2")
+        .bind(job_id)
+        .bind(track)
+        .execute(pool)
+        .await?;
+
+    for (kind, seq, url) in segments {
+        let id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO manifest_segments (id, job_id, track, kind, seq, url, downloaded)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
+        )
+        .bind(&id)
+        .bind(job_id)
+        .bind(track)
+        .bind(kind)
+        .bind(seq)
+        .bind(url)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+pub async fn get_manifest_segments(
+    pool: &SqlitePool,
+    job_id: &str,
+    track: &str,
+) -> anyhow::Result<Vec<ManifestSegmentRecord>> {
+    // 'media' > 'init' alphabetically, so ORDER BY kind DESC puts init first.
+    let rows = sqlx::query(
+        "SELECT id, job_id, track, kind, seq, url, downloaded
+         FROM manifest_segments WHERE job_id = ?1 AND track = ?2
+         ORDER BY kind DESC, seq ASC",
+    )
+    .bind(job_id)
+    .bind(track)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(ManifestSegmentRecord {
+                id: row.try_get("id")?,
+                job_id: row.try_get("job_id")?,
+                track: row.try_get("track")?,
+                kind: row.try_get("kind")?,
+                seq: row.try_get("seq")?,
+                url: row.try_get("url")?,
+                downloaded: row.try_get::<i64, _>("downloaded")? != 0,
+            })
+        })
+        .collect()
+}
+
+pub async fn mark_manifest_segment_downloaded(
+    pool: &SqlitePool,
+    segment_id: &str,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE manifest_segments SET downloaded = 1 WHERE id = ?1")
+        .bind(segment_id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -61,6 +61,14 @@ impl Engine {
         &self.pool
     }
 
+    /// Shared HTTP client access for manifest-based job-orchestration
+    /// modules (`crate::hls`, `crate::dash`) that fetch playlists/
+    /// manifests and segments directly rather than going through
+    /// [`Engine::run`]'s segmented-download path.
+    pub(crate) fn client(&self) -> &reqwest::Client {
+        &self.client
+    }
+
     pub fn new(pool: SqlitePool) -> Self {
         Engine {
             pool,
@@ -139,6 +147,76 @@ impl Engine {
             .get_or_init_torrent_engine(std::path::Path::new(&record.destination))
             .await?;
         crate::torrent::TorrentJobRunner::new(&self.pool, rqbit)
+            .resume_download(job_id, progress)
+            .await
+    }
+
+    /// Download a Metalink (`.metalink`/`.meta4`) document's first file
+    /// entry (Sprint 9). Resolves to an ordinary [`start_download`]
+    /// call — see `crate::metalink`'s module docs for why no separate
+    /// resume path is needed: a resumed Metalink download is just a
+    /// resumed HTTP job, already handled by `sdm resume`.
+    pub async fn start_metalink_download(
+        &self,
+        source: crate::metalink::MetalinkSource,
+        destination_dir: std::path::PathBuf,
+        connections: ConnectionsOption,
+        duplicate_policy: DuplicatePolicy,
+        progress: ProgressSender,
+    ) -> Result<Job, EngineError> {
+        let files = crate::metalink::fetch_and_parse(&self.client, &source).await?;
+        let file = files
+            .first()
+            .ok_or_else(|| EngineError::Other("Metalink document had no files".to_string()))?;
+        let req = crate::metalink::build_download_request(
+            file,
+            &destination_dir,
+            connections,
+            duplicate_policy,
+        )?;
+        self.start_download(req, progress).await
+    }
+
+    /// Start a new HLS (`.m3u8`) download (Sprint 9).
+    pub async fn start_hls_download(
+        &self,
+        req: crate::hls::HlsDownloadRequest,
+        progress: ProgressSender,
+    ) -> Result<Job, EngineError> {
+        crate::hls::HlsEngine::new(&self.pool, &self.client)
+            .start_download(req, progress)
+            .await
+    }
+
+    /// Resume a previously-started HLS job.
+    pub async fn resume_hls_download(
+        &self,
+        job_id: String,
+        progress: ProgressSender,
+    ) -> Result<Job, EngineError> {
+        crate::hls::HlsEngine::new(&self.pool, &self.client)
+            .resume_download(job_id, progress)
+            .await
+    }
+
+    /// Start a new MPEG-DASH (`.mpd`) download (Sprint 9).
+    pub async fn start_dash_download(
+        &self,
+        req: crate::dash::DashDownloadRequest,
+        progress: ProgressSender,
+    ) -> Result<Job, EngineError> {
+        crate::dash::DashEngine::new(&self.pool, &self.client)
+            .start_download(req, progress)
+            .await
+    }
+
+    /// Resume a previously-started DASH job.
+    pub async fn resume_dash_download(
+        &self,
+        job_id: String,
+        progress: ProgressSender,
+    ) -> Result<Job, EngineError> {
+        crate::dash::DashEngine::new(&self.pool, &self.client)
             .resume_download(job_id, progress)
             .await
     }
