@@ -4,8 +4,8 @@
 //! `wiremock`-driven approach as `sprint4_flow.rs`.
 
 use sdm_engine::{
-    ConnectionsOption, DashDownloadRequest, DuplicatePolicy, Engine, ExpectedChecksum,
-    HlsDownloadRequest, MetalinkSource,
+    ConnectionsOption, DashDownloadRequest, DuplicatePolicy, Engine, HlsDownloadRequest,
+    MetalinkSource,
 };
 use sha2::{Digest, Sha256};
 use wiremock::matchers::{method, path};
