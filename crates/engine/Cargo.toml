@@ -21,6 +21,10 @@ sha2.workspace = true
 crc32fast.workspace = true
 hex.workspace = true
 sqlx.workspace = true
+# Sprint 9: hls.rs pattern-matches directly on m3u8_rs::Playlist
+# variants (Master vs. Media), so it needs the crate as a direct
+# dependency, not just transitively through sdm-protocols.
+m3u8-rs.workspace = true
 sdm-protocols = { path = "../protocols" }
 sdm-storage = { path = "../storage" }
 sdm-torrent = { path = "../torrent" }
