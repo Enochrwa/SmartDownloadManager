@@ -17,9 +17,10 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
 use sdm_engine::{
-    ConnectionsOption, DownloadRequest, DuplicatePolicy, Engine, ExpectedChecksum,
-    FtpDownloadRequest, ProgressEvent, ScpDownloadRequest, SftpDownloadRequest,
-    SshConnectionOptions, SshEngine, TorrentDownloadRequest, WebDavDownloadRequest, WebDavEngine,
+    ConnectionsOption, DashDownloadRequest, DownloadRequest, DuplicatePolicy, Engine,
+    ExpectedChecksum, FtpDownloadRequest, HlsDownloadRequest, ProgressEvent, ScpDownloadRequest,
+    SftpDownloadRequest, SshConnectionOptions, SshEngine, TorrentDownloadRequest,
+    WebDavDownloadRequest, WebDavEngine,
 };
 use sdm_protocols::ssh::{HostKeyPolicy, SshAuth, SshUrl};
 
@@ -86,6 +87,10 @@ enum Commands {
         /// regardless of this flag.
         #[arg(long = "accept-new-hostkey")]
         accept_new_hostkey: bool,
+        /// HLS only: which variant to download — "best" (default),
+        /// "worst", or a 0-based variant index (0 = highest bandwidth).
+        #[arg(long, default_value = "best")]
+        quality: String,
     },
     /// Resume a previously started job by ID.
     Resume {
@@ -144,6 +149,14 @@ fn sdm_home() -> PathBuf {
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home).join(".sdm")
+}
+
+/// Metalink documents are usually local `.metalink`/`.meta4` files or an
+/// `http(s)://` URL ending the same way — same detection style as
+/// `sdm_torrent::looks_like_torrent_source` for magnet/`.torrent`.
+fn is_metalink_source(url: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    path.ends_with(".metalink") || path.ends_with(".meta4")
 }
 
 fn default_destination(url: &str) -> String {
@@ -245,6 +258,7 @@ async fn main() -> anyhow::Result<()> {
             ssh_key_passphrase,
             known_hosts,
             accept_new_hostkey,
+            quality,
         } => {
             if sdm_torrent::looks_like_torrent_source(&url) {
                 let destination_folder = PathBuf::from(output.unwrap_or_else(|| ".".to_string()));
@@ -265,6 +279,90 @@ async fn main() -> anyhow::Result<()> {
                     Ok(job) => println!("✓ Downloaded to {}", job.destination),
                     Err(e) => {
                         eprintln!("✗ Torrent download failed: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            } else if is_metalink_source(&url) {
+                let destination_dir = PathBuf::from(output.unwrap_or_else(|| ".".to_string()));
+                let connections_opt = ConnectionsOption::parse(&connections)?;
+                let duplicate_policy = DuplicatePolicy::parse(&on_duplicate)?;
+
+                let (tx, rx) = sdm_engine::channel();
+                let bar_task = tokio::spawn(render_progress(rx));
+                let source = sdm_engine::MetalinkSource::parse(&url);
+                let result = engine
+                    .start_metalink_download(
+                        source,
+                        destination_dir,
+                        connections_opt,
+                        duplicate_policy,
+                        tx,
+                    )
+                    .await;
+                let _ = bar_task.await;
+
+                match result {
+                    Ok(job) => println!("✓ Downloaded to {}", job.destination),
+                    Err(e) => {
+                        eprintln!("✗ Metalink download failed: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            } else if url.contains(".m3u8") {
+                let destination =
+                    PathBuf::from(output.unwrap_or_else(|| default_destination(&url)));
+                let variant = sdm_protocols::hls::VariantSelector::parse(&quality)?;
+                let checksum = checksum
+                    .as_deref()
+                    .map(ExpectedChecksum::parse)
+                    .transpose()?;
+
+                let (tx, rx) = sdm_engine::channel();
+                let bar_task = tokio::spawn(render_progress(rx));
+                let req = HlsDownloadRequest {
+                    url,
+                    destination,
+                    variant,
+                    expected_checksum: checksum,
+                    duplicate_policy: DuplicatePolicy::parse(&on_duplicate)?,
+                    max_live_polls: None,
+                };
+                let result = engine.start_hls_download(req, tx).await;
+                let _ = bar_task.await;
+
+                match result {
+                    Ok(job) => println!("✓ Downloaded to {}", job.destination),
+                    Err(e) => {
+                        eprintln!("✗ HLS download failed: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            } else if url.contains(".mpd") {
+                let destination_dir = PathBuf::from(output.unwrap_or_else(|| ".".to_string()));
+                let default_name = default_destination(&url);
+                let file_stem = default_name
+                    .rsplit_once('.')
+                    .map(|(stem, _)| stem.to_string())
+                    .unwrap_or(default_name);
+
+                let (tx, rx) = sdm_engine::channel();
+                let bar_task = tokio::spawn(render_progress(rx));
+                let req = DashDownloadRequest {
+                    url,
+                    destination_dir,
+                    file_stem,
+                    duplicate_policy: DuplicatePolicy::parse(&on_duplicate)?,
+                };
+                let result = engine.start_dash_download(req, tx).await;
+                let _ = bar_task.await;
+
+                match result {
+                    Ok(job) => println!(
+                        "✓ Downloaded video to {} (audio alongside it, if the manifest had a separate audio track)",
+                        job.destination
+                    ),
+                    Err(e) => {
+                        eprintln!("✗ DASH download failed: {e}");
                         std::process::exit(1);
                     }
                 }
@@ -485,6 +583,8 @@ async fn main() -> anyhow::Result<()> {
                 sdm_storage::JobKind::Torrent => {
                     engine.resume_torrent_download(job_id.clone(), tx).await
                 }
+                sdm_storage::JobKind::Hls => engine.resume_hls_download(job_id.clone(), tx).await,
+                sdm_storage::JobKind::Dash => engine.resume_dash_download(job_id.clone(), tx).await,
                 sdm_storage::JobKind::WebDav => {
                     WebDavEngine::new(&engine)
                         .resume_download(&job_id, tx)
@@ -567,6 +667,26 @@ async fn main() -> anyhow::Result<()> {
                         println!("peers:       {}", meta.peer_count);
                         if let Some(pieces) = meta.piece_count {
                             println!("pieces:      {pieces}");
+                        }
+                    }
+                }
+                if matches!(
+                    j.job_kind,
+                    sdm_storage::JobKind::Hls | sdm_storage::JobKind::Dash
+                ) {
+                    if let Some(meta) = sdm_storage::get_manifest_meta(&pool, &job_id).await? {
+                        println!("manifest:    {}", meta.manifest_url);
+                        if let Some(variant) = &meta.selected_variant {
+                            println!("variant:     {variant}");
+                        }
+                        if let Some(v) = &meta.video_representation_id {
+                            println!("video rep:   {v}");
+                        }
+                        if let Some(a) = &meta.audio_representation_id {
+                            println!("audio rep:   {a}");
+                        }
+                        if meta.is_live {
+                            println!("live:        yes");
                         }
                     }
                 }

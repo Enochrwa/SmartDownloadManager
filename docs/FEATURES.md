@@ -35,9 +35,9 @@ Phases referenced here are defined in `ROADMAP.md`.
 - [x] Magnet links / BitTorrent / DHT / peer exchange / trackers — Phase 2
 - [ ] Sequential download / torrent streaming — Phase 3
 - [x] Piece verification — Phase 2
-- [ ] Metalink (mirrors + hash verification) — Phase 2
-- [ ] HLS (m3u8) — Phase 2
-- [ ] MPEG-DASH (mpd) — Phase 2
+- [x] Metalink (mirrors + hash verification) — Phase 2, Sprint 9
+- [x] HLS (m3u8) — Phase 2, Sprint 9
+- [x] MPEG-DASH (mpd) — Phase 2, Sprint 9
 - [ ] RTMP — Phase 3
 - [ ] MMS — Phase 3
 - [ ] RTSP — Phase 3

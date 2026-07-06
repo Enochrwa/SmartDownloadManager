@@ -49,7 +49,15 @@ hex = "0.4"
 # and crates/protocols' HLS/DASH modules (Phase 2, Sprint 9).
 librqbit = "8"
 m3u8-rs = "6"
-dash-mpd-rs = "0.17"
+# The upstream repo is github.com/emarsden/dash-mpd-rs, but the crate is
+# published on crates.io under the name "dash-mpd" (TECH_DECISIONS.md §5's
+# "dash-mpd-rs" refers to the repo name). `default-features = false` drops
+# the crate's own `fetch` feature (reqwest/tokio/ffmpeg/mp4box subprocess
+# plumbing) since Sprint 9 only needs manifest parsing — segment fetching
+# goes through our own HTTP downloader, same as every other manifest-based
+# protocol here.
+dash-mpd = { version = "0.17", default-features = false }
+url = "2"
 # Sprint 7: FTP/FTPS carryover (docs/SPRINT_PLAN_PHASE2.md "Phase 1 carryover").
 # tokio-rustls-ring pulls suppaftp's own tokio_rustls/rustls re-exports so our
 # FTPS connector stays on the exact same rustls build as the rest of suppaftp.

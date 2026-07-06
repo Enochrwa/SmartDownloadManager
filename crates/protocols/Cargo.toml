@@ -20,6 +20,11 @@ percent-encoding.workspace = true
 russh.workspace = true
 russh-sftp.workspace = true
 base64.workspace = true
+# Sprint 9: Metalink (dependency-free XML scan, mirrors the webdav module's
+# approach), HLS via m3u8-rs, MPEG-DASH via dash-mpd (manifest parsing only).
+m3u8-rs.workspace = true
+dash-mpd.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true

@@ -143,6 +143,76 @@ impl Engine {
             .await
     }
 
+    /// Download a Metalink (`.metalink`/`.meta4`) document's first file
+    /// entry (Sprint 9). Resolves to an ordinary [`start_download`]
+    /// call — see `crate::metalink`'s module docs for why no separate
+    /// resume path is needed: a resumed Metalink download is just a
+    /// resumed HTTP job, already handled by `sdm resume`.
+    pub async fn start_metalink_download(
+        &self,
+        source: crate::metalink::MetalinkSource,
+        destination_dir: std::path::PathBuf,
+        connections: ConnectionsOption,
+        duplicate_policy: DuplicatePolicy,
+        progress: ProgressSender,
+    ) -> Result<Job, EngineError> {
+        let files = crate::metalink::fetch_and_parse(&self.client, &source).await?;
+        let file = files
+            .first()
+            .ok_or_else(|| EngineError::Other("Metalink document had no files".to_string()))?;
+        let req = crate::metalink::build_download_request(
+            file,
+            &destination_dir,
+            connections,
+            duplicate_policy,
+        )?;
+        self.start_download(req, progress).await
+    }
+
+    /// Start a new HLS (`.m3u8`) download (Sprint 9).
+    pub async fn start_hls_download(
+        &self,
+        req: crate::hls::HlsDownloadRequest,
+        progress: ProgressSender,
+    ) -> Result<Job, EngineError> {
+        crate::hls::HlsEngine::new(&self.pool, &self.client)
+            .start_download(req, progress)
+            .await
+    }
+
+    /// Resume a previously-started HLS job.
+    pub async fn resume_hls_download(
+        &self,
+        job_id: String,
+        progress: ProgressSender,
+    ) -> Result<Job, EngineError> {
+        crate::hls::HlsEngine::new(&self.pool, &self.client)
+            .resume_download(job_id, progress)
+            .await
+    }
+
+    /// Start a new MPEG-DASH (`.mpd`) download (Sprint 9).
+    pub async fn start_dash_download(
+        &self,
+        req: crate::dash::DashDownloadRequest,
+        progress: ProgressSender,
+    ) -> Result<Job, EngineError> {
+        crate::dash::DashEngine::new(&self.pool, &self.client)
+            .start_download(req, progress)
+            .await
+    }
+
+    /// Resume a previously-started DASH job.
+    pub async fn resume_dash_download(
+        &self,
+        job_id: String,
+        progress: ProgressSender,
+    ) -> Result<Job, EngineError> {
+        crate::dash::DashEngine::new(&self.pool, &self.client)
+            .resume_download(job_id, progress)
+            .await
+    }
+
     /// Check whether a prospective download looks like a duplicate of an
     /// existing job (same URL, same destination filename, or same
     /// checksum). Exposed so callers (e.g. the CLI) can prompt the user
@@ -310,12 +380,33 @@ impl Engine {
             job_id: job_id.clone(),
         });
 
-        let primary_url = mirror_set.primary().to_string();
-        let probe_result = sdm_protocols::probe(&self.client, &primary_url).await;
+        // Probe every mirror in ranked order until one responds
+        // successfully, rather than giving up as soon as the
+        // fastest-ranked mirror fails — the same "auto-switch on
+        // failure" behavior segment fetches already get (see
+        // `crate::mirrors` module docs), just applied to the initial
+        // probe too.
+        let mut probe_result = None;
+        for url in mirror_set.urls() {
+            match sdm_protocols::probe(&self.client, url).await {
+                Ok(info) => {
+                    probe_result = Some(Ok(info));
+                    break;
+                }
+                Err(e) => probe_result = Some(Err(e)),
+            }
+        }
+        let probe_result = probe_result
+            .expect("mirror_set is non-empty")
+            .map_err(EngineError::Protocol);
         if let Err(e) = &probe_result {
+            let class = match e {
+                EngineError::Protocol(p) => p.class(),
+                _ => ErrorClass::Other,
+            };
             let _ = progress.send(ProgressEvent::Failed {
                 job_id: job_id.clone(),
-                error_class: e.class().as_str().to_string(),
+                error_class: class.as_str().to_string(),
                 message: e.to_string(),
             });
         }

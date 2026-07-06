@@ -22,6 +22,8 @@ pub enum EngineError {
     },
     #[error("download skipped: duplicate of existing job {existing_job_id}")]
     DuplicateSkipped { existing_job_id: String },
+    #[error("{0}")]
+    Other(String),
 }
 
 impl From<anyhow::Error> for EngineError {
