@@ -32,13 +32,17 @@ pub enum JobStatus {
 }
 
 /// Which engine drives this job. HTTP keeps using the Sprint 1-6
-/// segmented/single-stream path; FTP and Torrent are Sprint 7 additions —
-/// see `crates/engine::ftp` and `crates/engine::torrent`.
+/// segmented/single-stream path; FTP and Torrent are Sprint 7 additions;
+/// SFTP/SCP/WebDAV are Sprint 8 — see `crates/engine::ftp`,
+/// `crates/engine::torrent`, `crates/engine::ssh`, `crates/engine::webdav`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JobKind {
     Http,
     Ftp,
     Torrent,
+    Sftp,
+    Scp,
+    WebDav,
 }
 
 impl From<sdm_storage::JobKind> for JobKind {
@@ -47,6 +51,9 @@ impl From<sdm_storage::JobKind> for JobKind {
             sdm_storage::JobKind::Http => JobKind::Http,
             sdm_storage::JobKind::Ftp => JobKind::Ftp,
             sdm_storage::JobKind::Torrent => JobKind::Torrent,
+            sdm_storage::JobKind::Sftp => JobKind::Sftp,
+            sdm_storage::JobKind::Scp => JobKind::Scp,
+            sdm_storage::JobKind::WebDav => JobKind::WebDav,
         }
     }
 }
@@ -57,6 +64,9 @@ impl From<JobKind> for sdm_storage::JobKind {
             JobKind::Http => sdm_storage::JobKind::Http,
             JobKind::Ftp => sdm_storage::JobKind::Ftp,
             JobKind::Torrent => sdm_storage::JobKind::Torrent,
+            JobKind::Sftp => sdm_storage::JobKind::Sftp,
+            JobKind::Scp => sdm_storage::JobKind::Scp,
+            JobKind::WebDav => sdm_storage::JobKind::WebDav,
         }
     }
 }

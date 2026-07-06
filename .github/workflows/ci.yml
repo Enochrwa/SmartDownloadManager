@@ -93,6 +93,75 @@ jobs:
           SDM_TEST_FTP_PASS: test
         run: cargo test -p sdm-protocols --test ftp_integration -- --nocapture
 
+  sftp-integration:
+    name: SFTP/SCP integration (Sprint 8)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-sftp-${{ hashFiles('**/Cargo.lock') }}
+      - name: Start local OpenSSH server
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-server
+          sudo useradd -m -s /bin/bash sdmtest
+          echo "sdmtest:sdmtest" | sudo chpasswd
+          sudo mkdir -p /home/sdmtest/testdata
+          echo "hello sftp world" | sudo tee /home/sdmtest/testdata/hello.txt > /dev/null
+          sudo chown -R sdmtest:sdmtest /home/sdmtest
+          echo -e "Port 2222\nPasswordAuthentication yes\nSubsystem sftp internal-sftp" | sudo tee -a /etc/ssh/sshd_config
+          sudo mkdir -p /run/sshd
+          sudo /usr/sbin/sshd -p 2222
+          sleep 2
+      - name: Run SFTP/SCP integration tests
+        env:
+          SDM_TEST_SFTP_ADDR: 127.0.0.1:2222
+          SDM_TEST_SFTP_USER: sdmtest
+          SDM_TEST_SFTP_PASS: sdmtest
+          SDM_TEST_SFTP_DIR: testdata
+        run: cargo test -p sdm-protocols --test sftp_integration -- --test-threads=1 --nocapture
+
+  webdav-integration:
+    name: WebDAV integration (Sprint 8)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-webdav-${{ hashFiles('**/Cargo.lock') }}
+      - name: Start local WebDAV server (wsgidav)
+        # `docs/SPRINT_PLAN_PHASE2.md` originally suggested "nginx with the
+        # dav module", but stock nginx doesn't ship PROPFIND support without
+        # a non-default third-party module unavailable in Ubuntu's archive.
+        # wsgidav is a pip-installable, fully RFC 4918-compliant WebDAV
+        # server — same protocol coverage, less CI fragility.
+        run: |
+          pip install wsgidav cheroot
+          mkdir -p /tmp/webdav_root
+          echo "hello webdav world" > /tmp/webdav_root/hello.txt
+          wsgidav --host=127.0.0.1 --port=8078 --root=/tmp/webdav_root --auth=anonymous &
+          sleep 2
+      - name: Run WebDAV integration tests
+        env:
+          SDM_TEST_WEBDAV_URL: http://127.0.0.1:8078
+        run: cargo test -p sdm-protocols --test webdav_integration -- --test-threads=1 --nocapture
+
   license-check:
     name: License compliance (cargo-deny)
     runs-on: ubuntu-latest

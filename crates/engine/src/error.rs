@@ -7,6 +7,8 @@ pub enum EngineError {
     #[error(transparent)]
     Ftp(#[from] sdm_protocols::ftp::FtpProtoError),
     #[error(transparent)]
+    Ssh(#[from] sdm_protocols::SshProtoError),
+    #[error(transparent)]
     Torrent(#[from] sdm_torrent::TorrentError),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

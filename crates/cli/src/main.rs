@@ -8,6 +8,9 @@
 //! Sprint 3: `sdm resume <job-id>`, `sdm list`, `sdm show <job-id>`.
 //! Sprint 4: `--mirror` (repeatable), `--checksum algo:hex`,
 //! `--on-duplicate overwrite|rename|skip`, `sdm verify <job-id>`.
+//! Sprint 8: `sftp://`/`scp://` (`--ssh-key`/`--ssh-password`,
+//! `--accept-new-hostkey`), `webdav://`/`webdavs://`, and
+//! `sdm list-remote <url>` for FTP/SFTP/WebDAV directory listing.
 
 use std::path::PathBuf;
 
@@ -15,8 +18,10 @@ use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
 use sdm_engine::{
     ConnectionsOption, DownloadRequest, DuplicatePolicy, Engine, ExpectedChecksum,
-    FtpDownloadRequest, ProgressEvent, TorrentDownloadRequest,
+    FtpDownloadRequest, ProgressEvent, ScpDownloadRequest, SftpDownloadRequest,
+    SshConnectionOptions, SshEngine, TorrentDownloadRequest, WebDavDownloadRequest, WebDavEngine,
 };
+use sdm_protocols::ssh::{HostKeyPolicy, SshAuth, SshUrl};
 
 #[derive(Parser)]
 #[command(name = "sdm", about = "SmartDownloadManager CLI", version)]
@@ -61,13 +66,62 @@ enum Commands {
         /// the file list if you don't already know the indices.
         #[arg(long = "only-files")]
         only_files: Option<String>,
+        /// SFTP/SCP only: password (prefer `--ssh-key`; falls back to any
+        /// `user:pass@` in the URL itself if omitted).
+        #[arg(long = "ssh-password")]
+        ssh_password: Option<String>,
+        /// SFTP/SCP only: path to a private key file.
+        #[arg(long = "ssh-key")]
+        ssh_key: Option<String>,
+        /// SFTP/SCP only: passphrase for --ssh-key, if it's encrypted.
+        #[arg(long = "ssh-key-passphrase")]
+        ssh_key_passphrase: Option<String>,
+        /// SFTP/SCP only: path to the known_hosts file (defaults to
+        /// ~/.ssh/known_hosts).
+        #[arg(long = "known-hosts")]
+        known_hosts: Option<String>,
+        /// SFTP/SCP only: trust and remember a host key seen for the
+        /// first time, instead of rejecting it. A host key that
+        /// *conflicts* with one already on record is always rejected
+        /// regardless of this flag.
+        #[arg(long = "accept-new-hostkey")]
+        accept_new_hostkey: bool,
     },
     /// Resume a previously started job by ID.
-    Resume { job_id: String },
+    Resume {
+        job_id: String,
+        /// Same meaning as `sdm download`'s flags — needed again on
+        /// resume because SSH credentials/host-key trust aren't persisted.
+        #[arg(long = "ssh-password")]
+        ssh_password: Option<String>,
+        #[arg(long = "ssh-key")]
+        ssh_key: Option<String>,
+        #[arg(long = "ssh-key-passphrase")]
+        ssh_key_passphrase: Option<String>,
+        #[arg(long = "known-hosts")]
+        known_hosts: Option<String>,
+        #[arg(long = "accept-new-hostkey")]
+        accept_new_hostkey: bool,
+    },
     /// List all known jobs.
     List,
     /// Show details for one job.
     Show { job_id: String },
+    /// List a remote directory's contents (`ftp(s)://`, `sftp://`, or
+    /// `webdav(s)://`).
+    ListRemote {
+        url: String,
+        #[arg(long = "ssh-password")]
+        ssh_password: Option<String>,
+        #[arg(long = "ssh-key")]
+        ssh_key: Option<String>,
+        #[arg(long = "ssh-key-passphrase")]
+        ssh_key_passphrase: Option<String>,
+        #[arg(long = "known-hosts")]
+        known_hosts: Option<String>,
+        #[arg(long = "accept-new-hostkey")]
+        accept_new_hostkey: bool,
+    },
     /// Re-verify a completed job's checksum and per-chunk hashes, and
     /// (with `--repair`) re-fetch only the chunks found to be corrupt.
     Verify {
@@ -104,6 +158,49 @@ fn default_destination(url: &str) -> String {
     } else {
         name.to_string()
     }
+}
+
+/// Build [`SshConnectionOptions`] from the CLI's `--ssh-*`/`--known-hosts`/
+/// `--accept-new-hostkey` flags, falling back to any `user:pass@` embedded
+/// directly in the URL when no explicit credential flag was given.
+fn ssh_connection_options(
+    ssh_url: &SshUrl,
+    ssh_password: Option<String>,
+    ssh_key: Option<String>,
+    ssh_key_passphrase: Option<String>,
+    known_hosts: Option<String>,
+    accept_new_hostkey: bool,
+) -> anyhow::Result<SshConnectionOptions> {
+    let auth = if let Some(path) = ssh_key {
+        SshAuth::PrivateKey {
+            path: PathBuf::from(path),
+            passphrase: ssh_key_passphrase,
+        }
+    } else if let Some(password) = ssh_password {
+        SshAuth::Password(password)
+    } else if let Some(password) = &ssh_url.password {
+        SshAuth::Password(password.clone())
+    } else {
+        anyhow::bail!(
+            "no SSH credentials given — pass --ssh-key <path>, --ssh-password <pw>, \
+             or embed user:pass@ in the URL"
+        );
+    };
+
+    let known_hosts_path = known_hosts
+        .map(PathBuf::from)
+        .unwrap_or_else(sdm_protocols::ssh::default_known_hosts_path);
+    let host_key_policy = if accept_new_hostkey {
+        HostKeyPolicy::AcceptNew
+    } else {
+        HostKeyPolicy::Strict
+    };
+
+    Ok(SshConnectionOptions {
+        auth,
+        known_hosts_path,
+        host_key_policy,
+    })
 }
 
 /// Parse a `--only-files` value like `"0,2,5"` into file indices.
@@ -143,6 +240,11 @@ async fn main() -> anyhow::Result<()> {
             on_duplicate,
             sequential,
             only_files,
+            ssh_password,
+            ssh_key,
+            ssh_key_passphrase,
+            known_hosts,
+            accept_new_hostkey,
         } => {
             if sdm_torrent::looks_like_torrent_source(&url) {
                 let destination_folder = PathBuf::from(output.unwrap_or_else(|| ".".to_string()));
@@ -180,6 +282,111 @@ async fn main() -> anyhow::Result<()> {
                     Ok(job) => println!("✓ Downloaded to {}", job.destination),
                     Err(e) => {
                         eprintln!("✗ FTP download failed: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            } else if url.starts_with("sftp://") {
+                let destination =
+                    PathBuf::from(output.unwrap_or_else(|| default_destination(&url)));
+                let ssh_url = SshUrl::parse(&url, "sftp")?;
+                let connection = ssh_connection_options(
+                    &ssh_url,
+                    ssh_password,
+                    ssh_key,
+                    ssh_key_passphrase,
+                    known_hosts,
+                    accept_new_hostkey,
+                )?;
+                let connections = ConnectionsOption::parse(&connections)?;
+
+                let ssh_engine = SshEngine::new(&pool);
+                let (tx, rx) = sdm_engine::channel();
+                let bar_task = tokio::spawn(render_progress(rx));
+                let req = SftpDownloadRequest {
+                    url,
+                    destination,
+                    connections,
+                    connection,
+                };
+                let result = ssh_engine.start_sftp_download(req, tx).await;
+                let _ = bar_task.await;
+
+                match result {
+                    Ok(job) => println!("✓ Downloaded to {}", job.destination),
+                    Err(e) => {
+                        eprintln!("✗ SFTP download failed: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            } else if url.starts_with("scp://") {
+                let destination =
+                    PathBuf::from(output.unwrap_or_else(|| default_destination(&url)));
+                let ssh_url = SshUrl::parse(&url, "scp")?;
+                let connection = ssh_connection_options(
+                    &ssh_url,
+                    ssh_password,
+                    ssh_key,
+                    ssh_key_passphrase,
+                    known_hosts,
+                    accept_new_hostkey,
+                )?;
+
+                let ssh_engine = SshEngine::new(&pool);
+                let (tx, rx) = sdm_engine::channel();
+                let bar_task = tokio::spawn(render_progress(rx));
+                let req = ScpDownloadRequest {
+                    url,
+                    destination,
+                    connection,
+                };
+                let result = ssh_engine.start_scp_download(req, tx).await;
+                let _ = bar_task.await;
+
+                match result {
+                    Ok(job) => println!("✓ Downloaded to {}", job.destination),
+                    Err(e) => {
+                        eprintln!("✗ SCP download failed: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            } else if url.starts_with("webdav://") || url.starts_with("webdavs://") {
+                let destination =
+                    PathBuf::from(output.unwrap_or_else(|| default_destination(&url)));
+                let connections = ConnectionsOption::parse(&connections)?;
+                let expected_checksum = checksum
+                    .as_deref()
+                    .map(ExpectedChecksum::parse)
+                    .transpose()?;
+
+                let webdav_engine = WebDavEngine::new(&engine);
+                let (tx, rx) = sdm_engine::channel();
+                let bar_task = tokio::spawn(render_progress(rx));
+                let req = WebDavDownloadRequest {
+                    url,
+                    destination,
+                    connections,
+                    expected_checksum,
+                };
+                let result = webdav_engine.start_download(req, tx).await;
+                let _ = bar_task.await;
+
+                match result {
+                    Ok(job) => {
+                        println!("✓ Downloaded to {}", job.destination);
+                        if let Some(actual) = &job.checksum_actual {
+                            let verified = if job.checksum_verified {
+                                "verified"
+                            } else {
+                                "computed, not compared"
+                            };
+                            println!(
+                                "  checksum ({}): {actual} [{verified}]",
+                                job.checksum_algorithm.as_deref().unwrap_or("sha256")
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("✗ WebDAV download failed: {e}");
                         std::process::exit(1);
                     }
                 }
@@ -257,7 +464,14 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::Resume { job_id } => {
+        Commands::Resume {
+            job_id,
+            ssh_password,
+            ssh_key,
+            ssh_key_passphrase,
+            known_hosts,
+            accept_new_hostkey,
+        } => {
             let kind = sdm_storage::get_job(&pool, &job_id)
                 .await?
                 .map(|j| j.job_kind)
@@ -270,6 +484,40 @@ async fn main() -> anyhow::Result<()> {
                 sdm_storage::JobKind::Ftp => engine.resume_ftp_download(job_id.clone(), tx).await,
                 sdm_storage::JobKind::Torrent => {
                     engine.resume_torrent_download(job_id.clone(), tx).await
+                }
+                sdm_storage::JobKind::WebDav => {
+                    WebDavEngine::new(&engine)
+                        .resume_download(&job_id, tx)
+                        .await
+                }
+                sdm_storage::JobKind::Sftp | sdm_storage::JobKind::Scp => {
+                    let record = sdm_storage::get_job(&pool, &job_id)
+                        .await?
+                        .ok_or_else(|| anyhow::anyhow!("job {job_id} not found"))?;
+                    let scheme = if kind == sdm_storage::JobKind::Sftp {
+                        "sftp"
+                    } else {
+                        "scp"
+                    };
+                    let ssh_url = SshUrl::parse(&record.url, scheme)?;
+                    let connection = ssh_connection_options(
+                        &ssh_url,
+                        ssh_password,
+                        ssh_key,
+                        ssh_key_passphrase,
+                        known_hosts,
+                        accept_new_hostkey,
+                    )?;
+                    let ssh_engine = SshEngine::new(&pool);
+                    if kind == sdm_storage::JobKind::Sftp {
+                        ssh_engine
+                            .resume_sftp_download(job_id.clone(), connection, tx)
+                            .await
+                    } else {
+                        ssh_engine
+                            .resume_scp_download(job_id.clone(), connection, tx)
+                            .await
+                    }
                 }
             };
             let _ = bar_task.await;
@@ -343,6 +591,66 @@ async fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         },
+        Commands::ListRemote {
+            url,
+            ssh_password,
+            ssh_key,
+            ssh_key_passphrase,
+            known_hosts,
+            accept_new_hostkey,
+        } => {
+            if url.starts_with("ftp://") || url.starts_with("ftps://") {
+                let ftp_url = sdm_protocols::ftp::FtpUrl::parse(&url)?;
+                let mut session = sdm_protocols::ftp::FtpSession::connect(&ftp_url).await?;
+                let path = if ftp_url.path.is_empty() {
+                    None
+                } else {
+                    Some(ftp_url.path.as_str())
+                };
+                let entries = session.list_dir(path).await?;
+                for entry in entries {
+                    println!("{entry}");
+                }
+            } else if url.starts_with("sftp://") {
+                let ssh_url = SshUrl::parse(&url, "sftp")?;
+                let connection = ssh_connection_options(
+                    &ssh_url,
+                    ssh_password,
+                    ssh_key,
+                    ssh_key_passphrase,
+                    known_hosts,
+                    accept_new_hostkey,
+                )?;
+                let session = sdm_protocols::ssh::SshSession::connect(
+                    &ssh_url,
+                    &connection.auth,
+                    connection.known_hosts_path,
+                    connection.host_key_policy,
+                )
+                .await?;
+                let remote_path = ssh_url.path.clone();
+                let entries = sdm_protocols::sftp::list_dir(&session, &remote_path).await?;
+                for entry in entries {
+                    let marker = if entry.is_dir { "/" } else { "" };
+                    println!("{}{marker}  {}", entry.name, entry.size);
+                }
+            } else if url.starts_with("webdav://") || url.starts_with("webdavs://") {
+                let client = sdm_protocols::build_client();
+                let entries = sdm_protocols::webdav::list_dir(&client, &url).await?;
+                for entry in entries {
+                    let marker = if entry.is_collection { "/" } else { "" };
+                    println!(
+                        "{}{marker}  {}",
+                        entry.href,
+                        entry.content_length.unwrap_or(0)
+                    );
+                }
+            } else {
+                anyhow::bail!(
+                    "list-remote only supports ftp(s)://, sftp://, and webdav(s):// URLs"
+                );
+            }
+        }
         Commands::Verify {
             job_id,
             checksum,

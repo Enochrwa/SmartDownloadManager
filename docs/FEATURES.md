@@ -7,29 +7,29 @@ it is the single source of truth for "is X done yet."
 Phases referenced here are defined in `ROADMAP.md`.
 
 ## 1. Core Download Engine — Phase 1
-- [ ] Multi-thread downloading, 1–128 connections
-- [ ] Dynamic thread allocation / automatic thread optimization
-- [ ] Resume individual thread
-- [ ] Split large files into chunks / merge chunks
+- [x] Multi-thread downloading, 1–128 connections
+- [x] Dynamic thread allocation / automatic thread optimization
+- [x] Resume individual thread
+- [x] Split large files into chunks / merge chunks
 - [ ] Adaptive chunk sizes
 - [ ] Per-server connection limits
-- [ ] Smart resume (crash, shutdown, reboot, disconnect, VPN reconnect, proxy change, weeks later)
-- [ ] Intelligent retry (classify timeout/DNS/SSL/server-busy/bandwidth/HTTP errors)
-- [ ] Mirror support (auto switch, compare speed, continue from another mirror)
-- [ ] Dynamic segment allocation ("segment stealing")
-- [ ] Download verification (SHA1/SHA256/SHA512/CRC32/MD5)
-- [ ] Corruption detection with per-chunk re-download
-- [ ] Automatic file renaming on conflict
-- [ ] Duplicate detection (URL/hash/filename/content) with overwrite/rename/skip
+- [x] Smart resume (crash, shutdown, reboot, disconnect, VPN reconnect, proxy change, weeks later)
+- [x] Intelligent retry (classify timeout/DNS/SSL/server-busy/bandwidth/HTTP errors)
+- [x] Mirror support (auto switch, compare speed, continue from another mirror)
+- [x] Dynamic segment allocation ("segment stealing")
+- [x] Download verification (SHA1/SHA256/SHA512/CRC32/MD5)
+- [x] Corruption detection with per-chunk re-download
+- [x] Automatic file renaming on conflict
+- [x] Duplicate detection (URL/hash/filename/content) with overwrite/rename/skip
 
 ## 2. Universal Protocol Support — Phase 1–3
 - [ ] HTTP/1.1, HTTP/2, HTTP/3 — Phase 1
 - [ ] HTTPS, TLS 1.2/1.3, certificate validation, pinned certs — Phase 1
 - [x] FTP (download/upload/resume/folder listing) — Phase 1
 - [x] FTPS — Phase 1
-- [ ] SFTP — Phase 2
-- [ ] SCP — Phase 2
-- [ ] WebDAV — Phase 2
+- [x] SFTP — Phase 2
+- [x] SCP — Phase 2
+- [x] WebDAV — Phase 2
 - [ ] SMB — Phase 3
 - [ ] NFS — Phase 3
 - [x] Magnet links / BitTorrent / DHT / peer exchange / trackers — Phase 2
