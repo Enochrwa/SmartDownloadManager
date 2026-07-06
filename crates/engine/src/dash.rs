@@ -351,10 +351,7 @@ impl<'a> DashEngine<'a> {
         }
         let mut out = tokio::fs::File::create(destination).await?;
         let mut ordered = segments.to_vec();
-        ordered.sort_by(|a, b| {
-            let rank = |k: &str| if k == "init" { 0 } else { 1 };
-            rank(&a.kind).cmp(&rank(&b.kind)).then(a.seq.cmp(&b.seq))
-        });
+        ordered.sort_by_key(|s| (if s.kind == "init" { 0 } else { 1 }, s.seq));
         for seg in &ordered {
             let part_path = parts_dir.join(format!("{}-{:010}", seg.kind, seg.seq));
             let mut part = tokio::fs::File::open(&part_path).await?;

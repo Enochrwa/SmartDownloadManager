@@ -414,12 +414,7 @@ async fn concatenate_parts(
     // 'init' before 'media', then by seq — matches get_manifest_segments's
     // own ordering, re-sorted here defensively in case a caller passes an
     // already-filtered/reordered subset.
-    ordered.sort_by(|a, b| {
-        let kind_rank = |k: &str| if k == "init" { 0 } else { 1 };
-        kind_rank(&a.kind)
-            .cmp(&kind_rank(&b.kind))
-            .then(a.seq.cmp(&b.seq))
-    });
+    ordered.sort_by_key(|s| (if s.kind == "init" { 0 } else { 1 }, s.seq));
     for seg in &ordered {
         let part_path = parts_dir.join(format!("{}-{:010}", seg.kind, seg.seq));
         let mut part = tokio::fs::File::open(&part_path).await?;

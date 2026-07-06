@@ -65,7 +65,7 @@ pub fn master_variants(playlist: &m3u8_rs::MasterPlaylist) -> Vec<HlsVariant> {
             codecs: v.codecs.clone(),
         })
         .collect();
-    variants.sort_by(|a, b| b.bandwidth.cmp(&a.bandwidth));
+    variants.sort_by_key(|v| std::cmp::Reverse(v.bandwidth));
     variants
 }
 
@@ -95,10 +95,7 @@ impl VariantSelector {
 
 /// Select one variant out of an already best-first-sorted list (see
 /// [`master_variants`]).
-pub fn select_variant<'a>(
-    variants: &'a [HlsVariant],
-    selector: VariantSelector,
-) -> Option<&'a HlsVariant> {
+pub fn select_variant(variants: &[HlsVariant], selector: VariantSelector) -> Option<&HlsVariant> {
     if variants.is_empty() {
         return None;
     }
