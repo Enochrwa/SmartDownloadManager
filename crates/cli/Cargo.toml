@@ -21,3 +21,4 @@ sdm-protocols = { path = "../protocols" }
 sdm-storage = { path = "../storage" }
 sdm-api-types = { path = "../api-types" }
 sdm-torrent = { path = "../torrent" }
+sdm-media = { path = "../media" }

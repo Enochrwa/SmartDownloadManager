@@ -162,6 +162,33 @@ jobs:
           SDM_TEST_WEBDAV_URL: http://127.0.0.1:8078
         run: cargo test -p sdm-protocols --test webdav_integration -- --test-threads=1 --nocapture
 
+  media-integration:
+    name: yt-dlp/FFmpeg integration (Sprint 10)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-media-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install yt-dlp and ffmpeg
+        run: |
+          pip install yt-dlp
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Run sdm-media integration tests (real yt-dlp + ffmpeg, local fixture server)
+        run: cargo test -p sdm-media --test ytdlp_ffmpeg_flow -- --test-threads=1 --nocapture
+      - name: Run sdm-engine Sprint 10 integration tests
+        run: cargo test -p sdm-engine --test sprint10_flow -- --test-threads=1 --nocapture
+
   license-check:
     name: License compliance (cargo-deny)
     runs-on: ubuntu-latest

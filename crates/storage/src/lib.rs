@@ -122,6 +122,9 @@ pub enum JobKind {
     /// deliberately has *no* variant here: it resolves to an ordinary
     /// `Http` job with mirrors + a checksum (see 0004_sprint9.sql).
     Dash,
+    /// Sprint 10. yt-dlp-backed extraction from one of yt-dlp's
+    /// thousands of supported sites — see `crates/engine::media`.
+    Media,
 }
 
 impl JobKind {
@@ -135,6 +138,7 @@ impl JobKind {
             JobKind::WebDav => "webdav",
             JobKind::Hls => "hls",
             JobKind::Dash => "dash",
+            JobKind::Media => "media",
         }
     }
 }
@@ -151,6 +155,7 @@ impl std::str::FromStr for JobKind {
             "webdav" => JobKind::WebDav,
             "hls" => JobKind::Hls,
             "dash" => JobKind::Dash,
+            "media" => JobKind::Media,
             other => anyhow::bail!("unknown job kind: {other}"),
         })
     }
@@ -175,6 +180,10 @@ pub struct JobRecord {
     pub checksum_expected: Option<String>,
     pub checksum_actual: Option<String>,
     pub checksum_verified: bool,
+    /// Sprint 10: set for a playlist/channel/album child job, pointing
+    /// at the one parent Job the queue/UI groups it under. `None` for
+    /// every job kind except a media child.
+    pub parent_job_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -227,7 +236,55 @@ pub async fn insert_job_with_kind(
     Ok(())
 }
 
-/// Persist probe results (HEAD request): content length, range support,
+/// Same as [`insert_job_with_kind`], but for a playlist/channel/album
+/// child job (Sprint 10) that should be linked back to its parent Job.
+/// A separate function for the same reason [`insert_job_with_kind`]
+/// itself is separate from [`insert_job`]: every existing call site keeps
+/// compiling unchanged.
+pub async fn insert_child_job_with_kind(
+    pool: &SqlitePool,
+    id: &str,
+    url: &str,
+    destination: &str,
+    kind: JobKind,
+    parent_job_id: &str,
+) -> anyhow::Result<()> {
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO jobs (id, url, destination, status, job_kind, downloaded_bytes, connections, supports_range, parent_job_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0, 1, 0, ?6, ?7, ?7)",
+    )
+    .bind(id)
+    .bind(url)
+    .bind(destination)
+    .bind(JobStatus::Queued.as_str())
+    .bind(kind.as_str())
+    .bind(parent_job_id)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// All child jobs of a playlist/channel/album parent, in the order they
+/// were created (i.e. the order yt-dlp's flat-playlist listing gave
+/// them).
+pub async fn list_child_jobs(
+    pool: &SqlitePool,
+    parent_job_id: &str,
+) -> anyhow::Result<Vec<JobRecord>> {
+    let rows = sqlx::query(
+        "SELECT id, url, destination, status, job_kind, total_bytes, downloaded_bytes, connections,
+                supports_range, etag, last_modified, error_class, error_message,
+                checksum_algorithm, checksum_expected, checksum_actual, checksum_verified, parent_job_id
+         FROM jobs WHERE parent_job_id = ?1 ORDER BY created_at ASC",
+    )
+    .bind(parent_job_id)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter().map(row_to_job).collect()
+}
 /// validators, and chosen connection count.
 #[allow(clippy::too_many_arguments)]
 pub async fn update_job_probe(
@@ -307,7 +364,7 @@ pub async fn get_job(pool: &SqlitePool, id: &str) -> anyhow::Result<Option<JobRe
     let row = sqlx::query(
         "SELECT id, url, destination, status, job_kind, total_bytes, downloaded_bytes, connections,
                 supports_range, etag, last_modified, error_class, error_message,
-                checksum_algorithm, checksum_expected, checksum_actual, checksum_verified
+                checksum_algorithm, checksum_expected, checksum_actual, checksum_verified, parent_job_id
          FROM jobs WHERE id = ?1",
     )
     .bind(id)
@@ -322,7 +379,7 @@ pub async fn list_jobs(pool: &SqlitePool) -> anyhow::Result<Vec<JobRecord>> {
     let rows = sqlx::query(
         "SELECT id, url, destination, status, job_kind, total_bytes, downloaded_bytes, connections,
                 supports_range, etag, last_modified, error_class, error_message,
-                checksum_algorithm, checksum_expected, checksum_actual, checksum_verified
+                checksum_algorithm, checksum_expected, checksum_actual, checksum_verified, parent_job_id
          FROM jobs ORDER BY created_at DESC",
     )
     .fetch_all(pool)
@@ -352,6 +409,7 @@ fn row_to_job(row: sqlx::sqlite::SqliteRow) -> anyhow::Result<JobRecord> {
         checksum_expected: row.try_get("checksum_expected")?,
         checksum_actual: row.try_get("checksum_actual")?,
         checksum_verified: row.try_get::<i64, _>("checksum_verified")? != 0,
+        parent_job_id: row.try_get("parent_job_id")?,
     })
 }
 
@@ -408,7 +466,7 @@ pub async fn find_duplicate_jobs(
     let rows = sqlx::query(
         "SELECT id, url, destination, status, job_kind, total_bytes, downloaded_bytes, connections,
                 supports_range, etag, last_modified, error_class, error_message,
-                checksum_algorithm, checksum_expected, checksum_actual, checksum_verified
+                checksum_algorithm, checksum_expected, checksum_actual, checksum_verified, parent_job_id
          FROM jobs
          WHERE url = ?1
             OR destination = ?2
@@ -922,7 +980,7 @@ pub async fn find_job_by_info_hash(
     let row = sqlx::query(
         "SELECT j.id, j.url, j.destination, j.status, j.job_kind, j.total_bytes, j.downloaded_bytes,
                 j.connections, j.supports_range, j.etag, j.last_modified, j.error_class, j.error_message,
-                j.checksum_algorithm, j.checksum_expected, j.checksum_actual, j.checksum_verified
+                j.checksum_algorithm, j.checksum_expected, j.checksum_actual, j.checksum_verified, j.parent_job_id
          FROM jobs j
          JOIN torrent_meta t ON t.job_id = j.id
          WHERE t.info_hash = ?1
@@ -1100,6 +1158,103 @@ pub async fn mark_manifest_segment_downloaded(
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/// Sprint 10: yt-dlp-backed job metadata — mirrors [`ManifestMetaRecord`]'s
+/// "one row per job, populated once probing finishes" pattern. Chapters
+/// and formats are stored as JSON (see the migration's comment) since
+/// they're variable-shape, extractor-dependent lists read back as a unit
+/// alongside the rest of the row rather than queried individually.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaMetaRecord {
+    pub job_id: String,
+    pub title: Option<String>,
+    pub thumbnail_url: Option<String>,
+    pub duration_seconds: Option<f64>,
+    /// Raw JSON, as produced by `serde_json::to_string` of
+    /// `Vec<sdm_media::ChapterInfo>` — this crate deliberately doesn't
+    /// depend on `sdm-media` to avoid a storage <-> media coupling, so
+    /// callers (`crates/engine::media`) serialize/deserialize it.
+    pub chapters_json: Option<String>,
+    /// Raw JSON of `Vec<sdm_media::FormatInfo>`, same rationale.
+    pub formats_json: Option<String>,
+    pub is_live: bool,
+    pub selected_format_id: Option<String>,
+    /// Raw JSON of `Vec<String>` (subtitle language codes).
+    pub subtitle_langs_json: Option<String>,
+    pub embed_thumbnail: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn insert_media_meta(
+    pool: &SqlitePool,
+    job_id: &str,
+    title: Option<&str>,
+    thumbnail_url: Option<&str>,
+    duration_seconds: Option<f64>,
+    chapters_json: Option<&str>,
+    formats_json: Option<&str>,
+    is_live: bool,
+    selected_format_id: Option<&str>,
+    subtitle_langs_json: Option<&str>,
+    embed_thumbnail: bool,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO media_meta (job_id, title, thumbnail_url, duration_seconds, chapters_json,
+                                  formats_json, is_live, selected_format_id, subtitle_langs_json, embed_thumbnail)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT(job_id) DO UPDATE SET
+            title = excluded.title,
+            thumbnail_url = excluded.thumbnail_url,
+            duration_seconds = excluded.duration_seconds,
+            chapters_json = excluded.chapters_json,
+            formats_json = excluded.formats_json,
+            is_live = excluded.is_live,
+            selected_format_id = excluded.selected_format_id,
+            subtitle_langs_json = excluded.subtitle_langs_json,
+            embed_thumbnail = excluded.embed_thumbnail",
+    )
+    .bind(job_id)
+    .bind(title)
+    .bind(thumbnail_url)
+    .bind(duration_seconds)
+    .bind(chapters_json)
+    .bind(formats_json)
+    .bind(is_live as i64)
+    .bind(selected_format_id)
+    .bind(subtitle_langs_json)
+    .bind(embed_thumbnail as i64)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_media_meta(
+    pool: &SqlitePool,
+    job_id: &str,
+) -> anyhow::Result<Option<MediaMetaRecord>> {
+    let row = sqlx::query(
+        "SELECT job_id, title, thumbnail_url, duration_seconds, chapters_json, formats_json,
+                is_live, selected_format_id, subtitle_langs_json, embed_thumbnail
+         FROM media_meta WHERE job_id = ?1",
+    )
+    .bind(job_id)
+    .fetch_optional(pool)
+    .await?;
+
+    let Some(row) = row else { return Ok(None) };
+    Ok(Some(MediaMetaRecord {
+        job_id: row.try_get("job_id")?,
+        title: row.try_get("title")?,
+        thumbnail_url: row.try_get("thumbnail_url")?,
+        duration_seconds: row.try_get("duration_seconds")?,
+        chapters_json: row.try_get("chapters_json")?,
+        formats_json: row.try_get("formats_json")?,
+        is_live: row.try_get::<i64, _>("is_live")? != 0,
+        selected_format_id: row.try_get("selected_format_id")?,
+        subtitle_langs_json: row.try_get("subtitle_langs_json")?,
+        embed_thumbnail: row.try_get::<i64, _>("embed_thumbnail")? != 0,
+    }))
 }
 
 #[cfg(test)]
@@ -1536,5 +1691,102 @@ mod tests {
             .await
             .unwrap();
         assert!(not_found.is_none());
+    }
+
+    #[tokio::test]
+    async fn media_meta_round_trips_and_upserts() {
+        let pool = connect_in_memory().await.unwrap();
+        insert_job_with_kind(
+            &pool,
+            "job-media-1",
+            "https://example.com/watch",
+            "/downloads",
+            JobKind::Media,
+        )
+        .await
+        .unwrap();
+
+        insert_media_meta(
+            &pool,
+            "job-media-1",
+            Some("A Test Video"),
+            Some("https://example.com/thumb.jpg"),
+            Some(123.45),
+            Some(r#"[{"title":"Intro","start_time":0.0,"end_time":10.0}]"#),
+            Some(r#"[{"format_id":"137","height":1080}]"#),
+            false,
+            Some("137"),
+            Some(r#"["en","fr"]"#),
+            true,
+        )
+        .await
+        .unwrap();
+
+        let meta = get_media_meta(&pool, "job-media-1").await.unwrap().unwrap();
+        assert_eq!(meta.title.as_deref(), Some("A Test Video"));
+        assert_eq!(meta.selected_format_id.as_deref(), Some("137"));
+        assert!(!meta.is_live);
+        assert!(meta.embed_thumbnail);
+
+        // Re-probing (e.g. a retry) should upsert, not fail on the
+        // job_id primary key.
+        insert_media_meta(
+            &pool,
+            "job-media-1",
+            Some("A Test Video (Updated Title)"),
+            None,
+            Some(999.0),
+            None,
+            None,
+            true,
+            None,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        let updated = get_media_meta(&pool, "job-media-1").await.unwrap().unwrap();
+        assert_eq!(
+            updated.title.as_deref(),
+            Some("A Test Video (Updated Title)")
+        );
+        assert!(updated.is_live);
+        assert!(!updated.embed_thumbnail);
+    }
+
+    #[tokio::test]
+    async fn playlist_children_link_back_to_their_parent_job() {
+        let pool = connect_in_memory().await.unwrap();
+        insert_job_with_kind(
+            &pool,
+            "parent-job",
+            "https://example.com/playlist",
+            "/downloads",
+            JobKind::Media,
+        )
+        .await
+        .unwrap();
+
+        for i in 1..=3 {
+            insert_child_job_with_kind(
+                &pool,
+                &format!("child-job-{i}"),
+                &format!("https://example.com/watch?v={i}"),
+                "/downloads",
+                JobKind::Media,
+                "parent-job",
+            )
+            .await
+            .unwrap();
+        }
+
+        let children = list_child_jobs(&pool, "parent-job").await.unwrap();
+        assert_eq!(children.len(), 3);
+        for child in &children {
+            assert_eq!(child.parent_job_id.as_deref(), Some("parent-job"));
+        }
+
+        let parent = get_job(&pool, "parent-job").await.unwrap().unwrap();
+        assert_eq!(parent.parent_job_id, None);
     }
 }
