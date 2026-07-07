@@ -41,14 +41,19 @@ async fn yt_dlp_available() -> bool {
 }
 
 async fn ffmpeg_available() -> bool {
-    FfmpegClient::new(FfmpegBinary::default().with_enforce_lgpl(false))
-        .verify_lgpl_build()
+    // NOTE: this must actually probe for the `ffmpeg` binary itself, not
+    // go through `FfmpegClient::verify_lgpl_build`: with `enforce_lgpl`
+    // disabled that call short-circuits to `Ok(())` without spawning
+    // anything (see `FfmpegClient::verify_lgpl_build`'s early return),
+    // which previously made this function report "available" even on
+    // environments (e.g. the macOS/Windows CI matrix) that have no
+    // `ffmpeg` on `PATH` at all — causing these tests to run (and fail
+    // with a spawn `NotFound` error) instead of being skipped.
+    tokio::process::Command::new("ffmpeg")
+        .arg("-version")
+        .output()
         .await
         .is_ok()
-        || std::process::Command::new("ffmpeg")
-            .arg("-version")
-            .output()
-            .is_ok()
 }
 
 macro_rules! skip_unless {
