@@ -47,6 +47,8 @@ pub enum JobKind {
     WebDav,
     Hls,
     Dash,
+    /// Sprint 10: yt-dlp-backed extraction — see `crates/engine::media`.
+    Media,
 }
 
 impl From<sdm_storage::JobKind> for JobKind {
@@ -60,6 +62,7 @@ impl From<sdm_storage::JobKind> for JobKind {
             sdm_storage::JobKind::WebDav => JobKind::WebDav,
             sdm_storage::JobKind::Hls => JobKind::Hls,
             sdm_storage::JobKind::Dash => JobKind::Dash,
+            sdm_storage::JobKind::Media => JobKind::Media,
         }
     }
 }
@@ -75,6 +78,7 @@ impl From<JobKind> for sdm_storage::JobKind {
             JobKind::WebDav => sdm_storage::JobKind::WebDav,
             JobKind::Hls => sdm_storage::JobKind::Hls,
             JobKind::Dash => sdm_storage::JobKind::Dash,
+            JobKind::Media => sdm_storage::JobKind::Media,
         }
     }
 }

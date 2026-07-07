@@ -9,6 +9,19 @@ tokio.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+sha2.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+# Deliberately NOT wiremock here: its modern hyper/rustls stack pulls in
+# transitive crates that require a newer rustc than this workspace's
+# pinned `rust-toolchain.toml` guarantees in all environments. Integration
+# tests in tests/ serve fixtures with a hand-rolled minimal HTTP/1.1
+# listener (see tests/support/tiny_http.rs) instead, which only needs
+# tokio (already a direct dependency).
+tempfile.workspace = true
 
 [lib]
 name = "sdm_media"

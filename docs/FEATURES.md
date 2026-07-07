@@ -50,9 +50,10 @@ Phases referenced here are defined in `ROADMAP.md`.
 - [ ] Batch URL detection from pasted text
 
 ## 4. Video Downloading — Phase 2
-- [ ] yt-dlp + FFmpeg integration (thousands of sites)
-- [ ] Video/audio/subtitles/thumbnails/chapters/comments/metadata download
-- [ ] Livestream / playlist / channel / album / podcast detection
+- [x] yt-dlp + FFmpeg integration (thousands of sites) — Phase 2, Sprint 10
+- [x] Video/audio/subtitles/thumbnails/chapters/metadata download — Phase 2, Sprint 10
+- [ ] Comments download
+- [x] Livestream / playlist / channel / album / podcast detection — Phase 2, Sprint 10
 - [ ] Quality selection 144p–8K
 - [ ] Codec selection (AV1/VP9/H264/HEVC)
 - [ ] Subtitle download + conversion (SRT/ASS/VTT)

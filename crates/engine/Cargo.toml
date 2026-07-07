@@ -28,6 +28,7 @@ m3u8-rs.workspace = true
 sdm-protocols = { path = "../protocols" }
 sdm-storage = { path = "../storage" }
 sdm-torrent = { path = "../torrent" }
+sdm-media = { path = "../media" }
 
 [dev-dependencies]
 wiremock.workspace = true

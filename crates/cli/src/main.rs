@@ -36,6 +36,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Commands {
     /// Download a single URL (runs the engine in-process — no daemon needed).
     Download {
@@ -91,6 +92,24 @@ enum Commands {
         /// "worst", or a 0-based variant index (0 = highest bandwidth).
         #[arg(long, default_value = "best")]
         quality: String,
+        /// Force this URL through the yt-dlp-backed extractor (Sprint 10)
+        /// even if it isn't one of the handful of sites
+        /// `sdm` recognizes automatically — yt-dlp itself supports
+        /// thousands of sites we can't enumerate here, so this is the
+        /// reliable way to reach any of them.
+        #[arg(long = "via-ytdlp")]
+        via_ytdlp: bool,
+        /// yt-dlp only: which format to fetch — "best" (default, highest
+        /// resolution) or an exact format_id from `sdm probe <url>`.
+        #[arg(long = "media-quality", default_value = "best")]
+        media_quality: String,
+        /// yt-dlp only: comma-separated subtitle language codes to fetch
+        /// and embed, e.g. "en,fr".
+        #[arg(long = "subs")]
+        subs: Option<String>,
+        /// yt-dlp only: embed the site's thumbnail as cover art.
+        #[arg(long = "embed-thumbnail")]
+        embed_thumbnail: bool,
     },
     /// Resume a previously started job by ID.
     Resume {
@@ -139,6 +158,10 @@ enum Commands {
         #[arg(long)]
         repair: bool,
     },
+    /// Sprint 10: show a yt-dlp-backed source's title, duration, and
+    /// available formats — use a format_id from here with
+    /// `sdm download --via-ytdlp --media-quality <format_id> <url>`.
+    Probe { url: String },
 }
 
 fn sdm_home() -> PathBuf {
@@ -157,6 +180,30 @@ fn sdm_home() -> PathBuf {
 fn is_metalink_source(url: &str) -> bool {
     let path = url.split(['?', '#']).next().unwrap_or(url);
     path.ends_with(".metalink") || path.ends_with(".meta4")
+}
+
+/// Best-effort recognition of a handful of well-known yt-dlp-supported
+/// sites, so `sdm download <url>` works without `--via-ytdlp` for the
+/// most common case. This is deliberately NOT exhaustive — yt-dlp itself
+/// supports thousands of extractors we have no reliable way to enumerate
+/// or keep in sync with here — so `--via-ytdlp` remains the reliable way
+/// to reach anything not on this short list.
+fn looks_like_ytdlp_site(url: &str) -> bool {
+    const KNOWN_HOSTS: &[&str] = &[
+        "youtube.com",
+        "youtu.be",
+        "vimeo.com",
+        "dailymotion.com",
+        "twitch.tv",
+        "soundcloud.com",
+        "tiktok.com",
+        "x.com/",
+        "twitter.com/",
+        "facebook.com/watch",
+        "reddit.com/r/",
+    ];
+    let lower = url.to_ascii_lowercase();
+    KNOWN_HOSTS.iter().any(|h| lower.contains(h))
 }
 
 fn default_destination(url: &str) -> String {
@@ -259,8 +306,52 @@ async fn main() -> anyhow::Result<()> {
             known_hosts,
             accept_new_hostkey,
             quality,
+            via_ytdlp,
+            media_quality,
+            subs,
+            embed_thumbnail,
         } => {
-            if sdm_torrent::looks_like_torrent_source(&url) {
+            if via_ytdlp || looks_like_ytdlp_site(&url) {
+                let destination_dir = PathBuf::from(output.unwrap_or_else(|| ".".to_string()));
+                let subtitle_langs = subs
+                    .as_deref()
+                    .map(|s| {
+                        s.split(',')
+                            .map(|l| l.trim().to_string())
+                            .filter(|l| !l.is_empty())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let selector = if media_quality.eq_ignore_ascii_case("best") {
+                    sdm_engine::QualitySelector::Best
+                } else {
+                    sdm_engine::QualitySelector::FormatId(media_quality)
+                };
+
+                let media_engine = sdm_engine::MediaEngine::new(&pool);
+                let (tx, rx) = sdm_engine::channel();
+                let bar_task = tokio::spawn(render_progress(rx));
+                let req = sdm_engine::MediaDownloadRequest {
+                    url,
+                    destination_dir,
+                    quality: selector,
+                    subtitle_langs,
+                    embed_thumbnail,
+                    duplicate_policy: DuplicatePolicy::parse(&on_duplicate)?,
+                    ytdlp: sdm_media::YtDlpBinary::default(),
+                    ffmpeg: sdm_media::FfmpegBinary::default(),
+                };
+                let result = media_engine.start_download(req, tx).await;
+                let _ = bar_task.await;
+
+                match result {
+                    Ok(job) => println!("✓ Downloaded to {}", job.destination),
+                    Err(e) => {
+                        eprintln!("✗ Media download failed: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            } else if sdm_torrent::looks_like_torrent_source(&url) {
                 let destination_folder = PathBuf::from(output.unwrap_or_else(|| ".".to_string()));
                 let only_files = only_files.as_deref().map(parse_file_indices).transpose()?;
 
@@ -619,6 +710,25 @@ async fn main() -> anyhow::Result<()> {
                             .await
                     }
                 }
+                sdm_storage::JobKind::Media => {
+                    // Sprint 10 scope: media jobs are a single yt-dlp
+                    // invocation (yt-dlp resumes/continues a partial
+                    // fetch itself by default), but this CLI doesn't yet
+                    // re-drive that invocation for a job that was
+                    // interrupted mid-`sdm download --via-ytdlp` — doing
+                    // so honestly requires re-deriving the exact same
+                    // format_id/subtitle/thumbnail request that was
+                    // originally used, which isn't persisted anywhere
+                    // beyond `media_meta.selected_format_id` yet. Rather
+                    // than silently re-running with different
+                    // (potentially wrong) options, this is a known,
+                    // explicit gap for a future sprint.
+                    eprintln!(
+                        "✗ Resuming a media (yt-dlp) job isn't supported yet — re-run \
+                         `sdm download --via-ytdlp <url>` instead."
+                    );
+                    std::process::exit(1);
+                }
             };
             let _ = bar_task.await;
 
@@ -818,6 +928,31 @@ async fn main() -> anyhow::Result<()> {
                     );
                     std::process::exit(1);
                 }
+            }
+        }
+        Commands::Probe { url } => {
+            let ytdlp = sdm_media::YtDlpClient::new(sdm_media::YtDlpBinary::default());
+            let metadata = ytdlp.probe(&url).await?;
+
+            println!("{}", metadata.title.as_deref().unwrap_or("(untitled)"));
+            if let Some(d) = metadata.duration {
+                println!("  duration: {:.0}s", d);
+            }
+            if metadata.is_livestream() {
+                println!("  ⚠ this is a livestream (will use --live-from-start)");
+            }
+            if !metadata.chapters.is_empty() {
+                println!("  {} chapter(s)", metadata.chapters.len());
+            }
+            println!("  formats:");
+            for f in &metadata.formats {
+                println!(
+                    "    {:<12} {:<8} video={} audio={}",
+                    f.format_id,
+                    f.quality_label(),
+                    f.has_video(),
+                    f.has_audio()
+                );
             }
         }
     }

@@ -71,6 +71,7 @@ mod tests {
             checksum_expected: None,
             checksum_actual: None,
             checksum_verified: false,
+            parent_job_id: None,
         }
     }
 

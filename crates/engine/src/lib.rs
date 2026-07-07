@@ -12,6 +12,8 @@
 //! - Sprint 8: SFTP (multi-channel segmented), SCP, and WebDAV.
 //! - Sprint 9: Metalink (mirrors + hash, reuses Sprint 4 machinery as-is),
 //!   HLS, and MPEG-DASH.
+//! - Sprint 10: yt-dlp + FFmpeg-backed extraction from yt-dlp's
+//!   thousands of supported sites (`crates/engine::media`).
 
 pub mod chunking;
 pub mod dash;
@@ -21,6 +23,7 @@ pub mod error;
 pub mod ftp;
 pub mod hls;
 pub mod job;
+pub mod media;
 pub mod metalink;
 pub mod mirrors;
 pub mod naming;
@@ -42,6 +45,7 @@ pub use error::EngineError;
 pub use ftp::FtpDownloadRequest;
 pub use hls::{HlsDownloadRequest, HlsEngine};
 pub use job::{Job, JobKind, JobStatus};
+pub use media::{MediaDownloadRequest, MediaEngine, QualitySelector};
 pub use metalink::MetalinkSource;
 pub use mirrors::MirrorSet;
 pub use progress::{channel, ProgressEvent, ProgressReceiver, ProgressSender};
