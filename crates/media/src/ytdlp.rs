@@ -129,6 +129,19 @@ impl YtDlpBinary {
     }
 }
 
+/// Name of the Python interpreter to invoke `.py` binary substitutes
+/// with (see [`YtDlpClient::command`]). `python3` is what this
+/// workspace's integration tests already gate their own execution on
+/// (`python3_available()` in `crates/engine/tests/sprint10_flow.rs` and
+/// `crates/media/tests/ytdlp_ffmpeg_flow.rs`, both of which run on
+/// `windows-latest` GitHub Actions runners, confirming `python3`
+/// resolves there too), so using the same name here keeps the
+/// availability check and the actual invocation in sync on every
+/// platform instead of guessing at a Windows-specific alias.
+fn python_interpreter() -> &'static str {
+    "python3"
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -216,8 +229,30 @@ impl YtDlpClient {
         Self { binary }
     }
 
+    /// Build the base `Command` for invoking the configured binary.
+    ///
+    /// Normally `binary.path` is a real executable (`yt-dlp`/`yt-dlp.exe`,
+    /// resolved via `PATH` or an absolute path to a pinned release asset),
+    /// which can be `Command::new`'d directly on every platform.
+    ///
+    /// Tests substitute a Python *script* (`tests/fixtures/fake_ytdlp.py`)
+    /// in its place. On Unix that works unmodified because the fixture
+    /// has a `#!/usr/bin/env python3` shebang and the executable bit set,
+    /// so the kernel itself dispatches it to Python. Windows has no
+    /// shebang support: `CreateProcess`-ing a `.py` file directly fails
+    /// with "%1 is not a valid Win32 application" (os error 193) even
+    /// though the file association machinery `cmd.exe`/Explorer use would
+    /// happily run it. So for any `.py` path, invoke the Python
+    /// interpreter explicitly with the script as its first argument —
+    /// this is correct (and a harmless no-op difference) on Unix too.
     fn command(&self) -> Command {
-        Command::new(&self.binary.path)
+        if self.binary.path.extension().and_then(|ext| ext.to_str()) == Some("py") {
+            let mut cmd = Command::new(python_interpreter());
+            cmd.arg(&self.binary.path);
+            cmd
+        } else {
+            Command::new(&self.binary.path)
+        }
     }
 
     /// `yt-dlp --version`.
