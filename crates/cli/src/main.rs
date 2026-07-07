@@ -711,23 +711,15 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 sdm_storage::JobKind::Media => {
-                    // Sprint 10 scope: media jobs are a single yt-dlp
-                    // invocation (yt-dlp resumes/continues a partial
-                    // fetch itself by default), but this CLI doesn't yet
-                    // re-drive that invocation for a job that was
-                    // interrupted mid-`sdm download --via-ytdlp` — doing
-                    // so honestly requires re-deriving the exact same
-                    // format_id/subtitle/thumbnail request that was
-                    // originally used, which isn't persisted anywhere
-                    // beyond `media_meta.selected_format_id` yet. Rather
-                    // than silently re-running with different
-                    // (potentially wrong) options, this is a known,
-                    // explicit gap for a future sprint.
-                    eprintln!(
-                        "✗ Resuming a media (yt-dlp) job isn't supported yet — re-run \
-                         `sdm download --via-ytdlp <url>` instead."
-                    );
-                    std::process::exit(1);
+                    let media_engine = sdm_engine::MediaEngine::new(&pool);
+                    media_engine
+                        .resume_download(
+                            job_id.clone(),
+                            sdm_media::YtDlpBinary::default(),
+                            sdm_media::FfmpegBinary::default(),
+                            tx,
+                        )
+                        .await
                 }
             };
             let _ = bar_task.await;

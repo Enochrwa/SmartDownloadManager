@@ -99,7 +99,7 @@ impl<'a> MediaEngine<'a> {
         if entries.len() <= 1 {
             let job_id = uuid::Uuid::new_v4().to_string();
             return self
-                .process_single_video(job_id, None, &req, &ytdlp, progress)
+                .process_single_video(job_id, None, &req, &ytdlp, progress, None)
                 .await;
         }
 
@@ -153,6 +153,7 @@ impl<'a> MediaEngine<'a> {
                     req_for_child(&req, &child_url),
                     &ytdlp,
                     progress.clone(),
+                    None,
                 )
                 .await
             {
@@ -176,6 +177,80 @@ impl<'a> MediaEngine<'a> {
         Ok(record.into())
     }
 
+    /// Resume a media job that was interrupted mid-download. Unlike
+    /// [`Self::start_download`], this doesn't take a
+    /// [`MediaDownloadRequest`] — it re-derives the exact original
+    /// format/subtitle/thumbnail choices from `media_meta` (persisted by
+    /// [`Self::process_single_video`] before the fetch itself begins, so
+    /// they survive whatever interrupted the job) and reuses the job's
+    /// exact recorded destination path rather than recomputing one, so
+    /// this genuinely continues the same job instead of quietly
+    /// producing a second, differently-named file alongside it.
+    ///
+    /// yt-dlp itself resumes/continues a partial single-file fetch by
+    /// default; this re-drives that same fetch (and, for a
+    /// video-only+audio-only pair, both fetches then the merge again —
+    /// yt-dlp will skip already-complete bytes on each) rather than
+    /// implementing byte-range resume logic of our own on top of it.
+    pub async fn resume_download(
+        &self,
+        job_id: String,
+        ytdlp_binary: YtDlpBinary,
+        ffmpeg_binary: FfmpegBinary,
+        progress: ProgressSender,
+    ) -> Result<Job, EngineError> {
+        let record = sdm_storage::get_job(self.pool, &job_id)
+            .await
+            .map_err(EngineError::from)?
+            .ok_or_else(|| EngineError::JobNotFound(job_id.clone()))?;
+        if record.job_kind != JobKind::Media {
+            return Err(EngineError::Other(format!(
+                "job {job_id} is not a media (yt-dlp) job"
+            )));
+        }
+        let meta = sdm_storage::get_media_meta(self.pool, &job_id)
+            .await
+            .map_err(EngineError::from)?
+            .ok_or_else(|| {
+                EngineError::Other(format!(
+                    "job {job_id} has no recorded media_meta (it may predate resumable \
+                     media downloads, or is a playlist parent — resume its child jobs \
+                     individually instead)"
+                ))
+            })?;
+        let format_id = meta.selected_format_id.clone().ok_or_else(|| {
+            EngineError::Other(format!(
+                "job {job_id}'s media_meta has no recorded format_id to resume with"
+            ))
+        })?;
+        let subtitle_langs: Vec<String> = meta
+            .subtitle_langs_json
+            .as_deref()
+            .map(|s| serde_json::from_str(s).unwrap_or_default())
+            .unwrap_or_default();
+        let destination = PathBuf::from(&record.destination);
+        let destination_dir = destination
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        let req = MediaDownloadRequest {
+            url: record.url.clone(),
+            destination_dir,
+            quality: QualitySelector::FormatId(format_id),
+            subtitle_langs,
+            embed_thumbnail: meta.embed_thumbnail,
+            // Irrelevant here: destination_override below bypasses the
+            // duplicate-policy naming logic entirely.
+            duplicate_policy: DuplicatePolicy::Overwrite,
+            ytdlp: ytdlp_binary,
+            ffmpeg: ffmpeg_binary,
+        };
+        let ytdlp = YtDlpClient::new(req.ytdlp.clone());
+        self.process_single_video(job_id, None, &req, &ytdlp, progress, Some(destination))
+            .await
+    }
+
     async fn process_single_video(
         &self,
         job_id: String,
@@ -183,6 +258,7 @@ impl<'a> MediaEngine<'a> {
         req: impl std::borrow::Borrow<MediaDownloadRequest>,
         ytdlp: &YtDlpClient,
         progress: ProgressSender,
+        destination_override: Option<PathBuf>,
     ) -> Result<Job, EngineError> {
         let req = req.borrow();
         let url = pre_existing_url.unwrap_or_else(|| req.url.clone());
@@ -202,18 +278,27 @@ impl<'a> MediaEngine<'a> {
             .first()
             .and_then(|f| f.ext.clone())
             .unwrap_or_else(|| "mp4".to_string());
-        let candidate_destination = req
-            .destination_dir
-            .join(format!("{}.{extension}", sanitize_filename(&title)));
-        if req.duplicate_policy == DuplicatePolicy::Skip && candidate_destination.exists() {
-            return Err(EngineError::DuplicateSkipped {
-                existing_job_id: job_id,
-            });
-        }
-        let destination = match req.duplicate_policy {
-            DuplicatePolicy::Overwrite => candidate_destination,
-            DuplicatePolicy::Skip | DuplicatePolicy::Rename => {
-                unique_destination(&candidate_destination)
+        let destination = if let Some(fixed) = destination_override {
+            // Resuming an existing job: reuse its exact recorded
+            // destination rather than recomputing one from a fresh
+            // title/extension probe (which could theoretically differ
+            // slightly and would otherwise duplicate-rename alongside
+            // the original instead of continuing it).
+            fixed
+        } else {
+            let candidate_destination = req
+                .destination_dir
+                .join(format!("{}.{extension}", sanitize_filename(&title)));
+            if req.duplicate_policy == DuplicatePolicy::Skip && candidate_destination.exists() {
+                return Err(EngineError::DuplicateSkipped {
+                    existing_job_id: job_id,
+                });
+            }
+            match req.duplicate_policy {
+                DuplicatePolicy::Overwrite => candidate_destination,
+                DuplicatePolicy::Skip | DuplicatePolicy::Rename => {
+                    unique_destination(&candidate_destination)
+                }
             }
         };
 

@@ -157,7 +157,10 @@ async fn playlist_url_expands_into_one_parent_and_n_child_jobs() {
 
 #[tokio::test]
 async fn separate_video_and_audio_formats_are_fetched_and_really_merged() {
-    skip_unless!(python3_available(), "python3 not on PATH (needed for the fake yt-dlp fixture)");
+    skip_unless!(
+        python3_available(),
+        "python3 not on PATH (needed for the fake yt-dlp fixture)"
+    );
     let ffmpeg_ok = std::process::Command::new("ffmpeg")
         .arg("-version")
         .output()
@@ -218,7 +221,10 @@ async fn separate_video_and_audio_formats_are_fetched_and_really_merged() {
 
 #[tokio::test]
 async fn requested_subtitles_and_thumbnail_are_embedded_in_the_final_file() {
-    skip_unless!(python3_available(), "python3 not on PATH (needed for the fake yt-dlp fixture)");
+    skip_unless!(
+        python3_available(),
+        "python3 not on PATH (needed for the fake yt-dlp fixture)"
+    );
     let ffmpeg_ok = std::process::Command::new("ffmpeg")
         .arg("-version")
         .output()
@@ -267,4 +273,62 @@ async fn requested_subtitles_and_thumbnail_are_embedded_in_the_final_file() {
     // And the primary content stream must still be intact alongside it.
     assert!(stderr.contains("Video: h264") || stderr.contains("Video: mpeg4"));
     assert!(stderr.contains("Audio:"));
+}
+
+#[tokio::test]
+async fn resume_reuses_the_original_destination_and_recorded_format() {
+    skip_unless!(
+        python3_available(),
+        "python3 not on PATH (needed for the fake yt-dlp fixture)"
+    );
+
+    let fake_ytdlp = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_ytdlp.py");
+
+    let pool = connect_in_memory().await.unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+
+    let engine = MediaEngine::new(&pool);
+    let (tx, _rx) = sdm_engine::progress::channel();
+    let req = MediaDownloadRequest {
+        url: "https://fake.invalid/watch?v=resume-me".to_string(),
+        destination_dir: tmp.path().to_path_buf(),
+        quality: QualitySelector::Best,
+        subtitle_langs: vec![],
+        embed_thumbnail: false,
+        duplicate_policy: DuplicatePolicy::Rename,
+        ytdlp: YtDlpBinary::new(fake_ytdlp.clone()),
+        ffmpeg: FfmpegBinary::default(),
+    };
+
+    let job = engine
+        .start_download(req, tx)
+        .await
+        .expect("initial download should succeed");
+    let original = get_job(&pool, &job.id).await.unwrap().unwrap();
+    assert_eq!(original.status, JobStatus::Completed);
+    let original_destination = original.destination.clone();
+
+    // Simulate an interruption: the job's file is gone/incomplete, but
+    // its row and media_meta (persisted before the fetch itself began)
+    // are still there, exactly as they'd be after a crash mid-download.
+    tokio::fs::remove_file(&original_destination).await.unwrap();
+
+    let (tx2, _rx2) = sdm_engine::progress::channel();
+    let resumed = engine
+        .resume_download(
+            job.id.clone(),
+            YtDlpBinary::new(fake_ytdlp),
+            FfmpegBinary::default(),
+            tx2,
+        )
+        .await
+        .expect("resume should succeed using the recorded format/destination");
+
+    assert_eq!(
+        resumed.destination, original_destination,
+        "resume must reuse the exact original destination, not rename alongside it"
+    );
+    let record = get_job(&pool, &job.id).await.unwrap().unwrap();
+    assert_eq!(record.status, JobStatus::Completed);
+    assert!(tokio::fs::metadata(&original_destination).await.is_ok());
 }
