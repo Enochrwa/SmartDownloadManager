@@ -35,6 +35,7 @@ full feature checklist and what's shipped so far.
 | [`docs/SPRINT_PLAN.md`](docs/SPRINT_PLAN.md) | Sprint-by-sprint plan for Phase 1 |
 | [`docs/FEATURES.md`](docs/FEATURES.md) | Every feature, checkboxed, phase-tagged |
 | [`docs/LICENSING.md`](docs/LICENSING.md) | Third-party license tracking |
+| [`docs/RUNNING_AND_TESTING.md`](docs/RUNNING_AND_TESTING.md) | Run the desktop app + browser extensions and test every feature, on Windows/macOS/Ubuntu |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to contribute |
 
 ## Repository layout
