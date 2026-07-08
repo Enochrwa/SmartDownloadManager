@@ -74,6 +74,28 @@ data-encoding = "2"
 russh = { version = "0.62", features = ["ring"] }
 russh-sftp = "2"
 base64 = "0.22"
+# Sprint 12: `sdm search --regex` (FTS5 handles the plain-text/token
+# search path; regex mode can't be pushed into FTS5's tokenizer, so it's
+# applied in-process against the already-filtered candidate rows).
+regex = "1"
+# Sprint 12: proxy support (SOCKS4/SOCKS5) for the HTTP/WebDAV transport,
+# layered onto the existing reqwest client.
+tokio-socks = "0.5"
+# Sprint 12: DNS over HTTPS resolver, with plain-DNS fallback.
+hickory-resolver = { version = "0.24", features = ["dns-over-https-rustls"] }
+# Sprint 12: encrypted credential storage via OS-native keychains
+# (Windows Credential Manager / macOS Keychain / Linux Secret Service).
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+# Sprint 12: proxy auth / OAuth2 refresh token, cookie, and API-key
+# encryption-at-rest fallback for platforms with no OS keychain (e.g. a
+# headless Linux NAS install with no Secret Service daemon running) —
+# `docs/TECH_DECISIONS.md` §13 already commits to SQLite everywhere else,
+# so the fallback is an AES-256-GCM-encrypted blob in the same DB rather
+# than a second storage engine, with the key itself still kept in the
+# keychain where one is available.
+aes-gcm = "0.10"
+# Sprint 12: OAuth2 authorization-code flow with local-loopback redirect.
+oauth2 = "4"
 
 [profile.release]
 opt-level = 3

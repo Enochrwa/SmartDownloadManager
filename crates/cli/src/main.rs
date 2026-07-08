@@ -162,6 +162,33 @@ enum Commands {
     /// available formats — use a format_id from here with
     /// `sdm download --via-ytdlp --media-quality <format_id> <url>`.
     Probe { url: String },
+    /// Sprint 12: full-text + filtered search across download history and
+    /// the active queue (filename, URL, category, status, date range).
+    Search {
+        /// Free-text query (matches filename, URL, category, status).
+        /// Omit to just apply the filter flags below.
+        text: Option<String>,
+        /// Treat `text` as a regular expression instead of a full-text
+        /// query. FTS5 has no native regex mode, so this path is matched
+        /// in-process against the filtered candidate rows.
+        #[arg(long)]
+        regex: bool,
+        #[arg(long)]
+        category: Option<String>,
+        /// One of: queued, probing, downloading, paused, verifying,
+        /// completed, failed.
+        #[arg(long)]
+        status: Option<String>,
+        /// Inclusive RFC3339 lower bound on `created_at`, e.g.
+        /// "2026-01-01T00:00:00Z".
+        #[arg(long = "from")]
+        date_from: Option<String>,
+        /// Inclusive RFC3339 upper bound on `created_at`.
+        #[arg(long = "to")]
+        date_to: Option<String>,
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+    },
 }
 
 fn sdm_home() -> PathBuf {
@@ -946,6 +973,49 @@ async fn main() -> anyhow::Result<()> {
                     f.has_audio()
                 );
             }
+        }
+        Commands::Search {
+            text,
+            regex,
+            category,
+            status,
+            date_from,
+            date_to,
+            limit,
+        } => {
+            let status = status
+                .as_deref()
+                .map(|s| s.parse::<sdm_storage::JobStatus>())
+                .transpose()?;
+            let query = sdm_storage::SearchQuery {
+                text,
+                regex,
+                category,
+                status,
+                date_from,
+                date_to,
+                limit: Some(limit),
+            };
+            let started = std::time::Instant::now();
+            let results = sdm_storage::search_jobs(&pool, &query).await?;
+            if results.is_empty() {
+                println!("No matches.");
+            }
+            for r in &results {
+                println!(
+                    "{}  {:<8}  {:<12}  {:<12}  {}",
+                    r.job_id,
+                    r.job_kind.as_str(),
+                    r.status.as_str(),
+                    r.category.as_deref().unwrap_or("-"),
+                    r.filename,
+                );
+            }
+            eprintln!(
+                "{} match(es) in {:.1}ms",
+                results.len(),
+                started.elapsed().as_secs_f64() * 1000.0
+            );
         }
     }
 
