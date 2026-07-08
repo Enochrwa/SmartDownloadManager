@@ -99,6 +99,10 @@ button.sdm-primary {
   font-size: 0.85rem;
 }
 
+.sdm-error {
+  color: var(--sdm-danger, #d9534f);
+}
+
 .sdm-queue-list {
   list-style: none;
   margin: 0;

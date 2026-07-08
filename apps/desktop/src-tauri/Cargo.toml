@@ -26,6 +26,7 @@ sdm-storage = { path = "../../../crates/storage" }
 sdm-server = { path = "../../../crates/server" }
 sdm-api-types = { path = "../../../crates/api-types" }
 axum.workspace = true
+socket2 = "0.5"
 
 [lib]
 name = "sdm_desktop_lib"
