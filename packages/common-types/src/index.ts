@@ -56,3 +56,25 @@ export interface SpeedSample {
   t: number; // ms since epoch
   bps: number;
 }
+
+/**
+ * Sprint 11: the browser-extension pairing flow. Hand-in-sync with
+ * `apps/desktop/src-tauri/src/dto.rs`'s `PairingTokenDto`/`PairingStatusDto`.
+ */
+export interface PairingToken {
+  token: string;
+  label: string;
+  createdAt: string;
+}
+
+export interface PairedExtension {
+  label: string;
+  createdAt: string;
+  lastSeenAt?: string | null;
+}
+
+export interface PairingStatus {
+  connected: boolean;
+  pairedExtensions: PairedExtension[];
+  apiPort: number;
+}

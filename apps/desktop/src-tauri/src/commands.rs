@@ -407,3 +407,75 @@ pub fn auto_resume_interrupted_jobs(app: AppHandle, state: Arc<AppState>) {
         }
     });
 }
+
+/// Sprint 11: the settings panel's "Extension connected" indicator polls
+/// this to learn whether any paired browser extension has been seen
+/// recently, and to list every paired extension for the user to review
+/// or revoke.
+#[tauri::command]
+pub async fn pairing_status(
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::dto::PairingStatusDto, String> {
+    // A token counts as "connected" if seen within the last two minutes —
+    // generous enough that a popup that's merely idle (not polling every
+    // second) still shows as connected, but tight enough to reflect an
+    // uninstalled/quit browser fairly promptly.
+    const CONNECTED_WINDOW_SECS: i64 = 120;
+    let connected = sdm_storage::has_recent_pairing_activity(&state.pool, CONNECTED_WINDOW_SECS)
+        .await
+        .map_err(|e| e.to_string())?;
+    let tokens = sdm_storage::list_pairing_tokens(&state.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(crate::dto::PairingStatusDto {
+        connected,
+        paired_extensions: tokens
+            .into_iter()
+            .map(|t| crate::dto::PairedExtensionDto {
+                label: t.label,
+                created_at: t.created_at,
+                last_seen_at: t.last_seen_at,
+            })
+            .collect(),
+        api_port: state.extension_api_port,
+    })
+}
+
+/// Mint a brand-new pairing token for the first-run pairing flow: the UI
+/// displays this token (and the `api_port` from [`pairing_status`]) for
+/// the user to enter into the extension's options page.
+#[tauri::command]
+pub async fn pairing_issue_token(
+    state: State<'_, Arc<AppState>>,
+    label: Option<String>,
+) -> Result<crate::dto::PairingTokenDto, String> {
+    let token = {
+        use rand::RngCore;
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        hex::encode(bytes)
+    };
+    let label = label
+        .filter(|l| !l.trim().is_empty())
+        .unwrap_or_else(|| "Browser extension".to_string());
+    sdm_storage::insert_pairing_token(&state.pool, &token, &label)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(crate::dto::PairingTokenDto {
+        token,
+        label,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    })
+}
+
+/// Revoke a paired extension (e.g. the user uninstalled it, or wants to
+/// re-pair from scratch).
+#[tauri::command]
+pub async fn pairing_revoke_token(
+    state: State<'_, Arc<AppState>>,
+    token: String,
+) -> Result<(), String> {
+    sdm_storage::revoke_pairing_token(&state.pool, &token)
+        .await
+        .map_err(|e| e.to_string())
+}

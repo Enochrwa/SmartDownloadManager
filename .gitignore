@@ -19,6 +19,9 @@ turbo-*.log
 apps/desktop/src-tauri/target
 apps/desktop/src-tauri/gen
 
+# Browser extensions
+extensions/*/dist
+
 # Env / secrets
 .env
 .env.*

@@ -17,6 +17,13 @@ const mockApi = vi.hoisted(() => ({
   repairDatabase: vi.fn().mockResolvedValue({ integrityErrors: [], action: "none_needed" }),
   backupNow: vi.fn().mockResolvedValue("/backups/jobs-1.db"),
   cleanupOrphans: vi.fn().mockResolvedValue([]),
+  pairingStatus: vi
+    .fn()
+    .mockResolvedValue({ connected: false, pairedExtensions: [], apiPort: 7890 }),
+  pairingIssueToken: vi
+    .fn()
+    .mockResolvedValue({ token: "test-token", label: "Test", createdAt: "2026-01-01T00:00:00Z" }),
+  pairingRevokeToken: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("./api", () => ({ api: mockApi }));
@@ -84,5 +91,16 @@ describe("App", () => {
     render(<App />);
     fireEvent.click(screen.getByLabelText("Open settings"));
     expect(await screen.findByLabelText("Settings")).toBeInTheDocument();
+  });
+
+  it("shows the browser extension pairing flow", async () => {
+    render(<App />);
+    fireEvent.click(screen.getByLabelText("Open settings"));
+    expect(await screen.findByText("Browser Extension")).toBeInTheDocument();
+    expect(await screen.findByText("No extension connected")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Generate pairing token"));
+    expect(await screen.findByText("test-token")).toBeInTheDocument();
+    expect(mockApi.pairingIssueToken).toHaveBeenCalled();
   });
 });

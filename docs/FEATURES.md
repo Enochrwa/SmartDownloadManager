@@ -43,11 +43,11 @@ Phases referenced here are defined in `ROADMAP.md`.
 - [ ] RTSP — Phase 3
 
 ## 3. Browser Integration — Phase 2
-- [ ] Chrome / Firefox / Edge / Brave / Opera / Vivaldi extensions (WebExtensions, shared codebase)
-- [ ] Auto-detect downloads/video/audio/PDF/ZIP
-- [ ] Clipboard monitoring with "Download?" popup
-- [ ] Drag & drop (URL/HTML/file/text)
-- [ ] Batch URL detection from pasted text
+- [x] Chrome / Firefox / Edge / Brave / Opera / Vivaldi extensions (WebExtensions, shared codebase) — Phase 2, Sprint 11
+- [x] Auto-detect downloads/video/audio/PDF/ZIP — Phase 2, Sprint 11
+- [x] Clipboard monitoring with "Download?" popup — Phase 2, Sprint 11
+- [x] Drag & drop (URL/HTML/file/text) — Phase 2, Sprint 11
+- [x] Batch URL detection from pasted text — Phase 2, Sprint 11
 
 ## 4. Video Downloading — Phase 2
 - [x] yt-dlp + FFmpeg integration (thousands of sites) — Phase 2, Sprint 10

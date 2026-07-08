@@ -8,6 +8,7 @@ description = "Shared request/response DTOs used by sdm-server, sdm-cli, and fut
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+sdm-storage = { path = "../storage" }
 
 [lib]
 name = "sdm_api_types"

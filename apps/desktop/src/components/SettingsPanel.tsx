@@ -1,5 +1,5 @@
-import type { RepairReport } from "@sdm/common-types";
-import { useState } from "react";
+import type { PairingStatus, PairingToken, RepairReport } from "@sdm/common-types";
+import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { Theme } from "../store";
 
@@ -33,6 +33,28 @@ export function SettingsPanel({
 }: SettingsPanelProps) {
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pairing, setPairing] = useState<PairingStatus | null>(null);
+  const [issuedToken, setIssuedToken] = useState<PairingToken | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const result = await api.pairingStatus();
+        if (!cancelled) setPairing(result);
+      } catch {
+        // sdmd's embedded extension API may not have finished starting
+        // up yet on the very first open — the next poll will pick it up.
+      }
+    };
+    void poll();
+    const interval = setInterval(poll, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [open]);
 
   if (!open) return null;
 
@@ -43,6 +65,29 @@ export function SettingsPanel({
       setStatus(await action());
     } catch (err) {
       setStatus(`${label} failed: ${err}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleGenerateToken = async () => {
+    setBusy(true);
+    try {
+      setIssuedToken(await api.pairingIssueToken());
+    } catch (err) {
+      setStatus(`Couldn't generate a pairing token: ${err}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRevoke = async (token: string) => {
+    setBusy(true);
+    try {
+      await api.pairingRevokeToken(token);
+      setPairing(await api.pairingStatus());
+    } catch (err) {
+      setStatus(`Couldn't revoke that pairing: ${err}`);
     } finally {
       setBusy(false);
     }
@@ -82,6 +127,62 @@ export function SettingsPanel({
         <section>
           <h3>Downloads</h3>
           <p className="sdm-muted">Default folder: {defaultDir}</p>
+        </section>
+
+        <section>
+          <h3>Browser Extension</h3>
+          <p className="sdm-form-row">
+            <span
+              className={
+                pairing?.connected
+                  ? "sdm-status-dot sdm-connected"
+                  : "sdm-status-dot sdm-disconnected"
+              }
+              aria-hidden="true"
+            />
+            {pairing?.connected
+              ? "Extension connected"
+              : pairing
+                ? "No extension connected"
+                : "Checking…"}
+          </p>
+          {pairing && pairing.pairedExtensions.length > 0 && (
+            <ul className="sdm-muted">
+              {pairing.pairedExtensions.map((ext) => (
+                <li key={ext.createdAt + ext.label}>
+                  {ext.label}
+                  {ext.lastSeenAt
+                    ? ` — last seen ${new Date(ext.lastSeenAt).toLocaleString()}`
+                    : ""}
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="sdm-form-row">
+            <button type="button" disabled={busy} onClick={() => void handleGenerateToken()}>
+              Generate pairing token
+            </button>
+          </div>
+          {issuedToken && (
+            <div className="sdm-pairing-token">
+              <p className="sdm-muted">
+                In the extension's Settings page, set the sdmd address to{" "}
+                <code>http://127.0.0.1:{pairing?.apiPort ?? 7890}</code> and paste this token:
+              </p>
+              <code className="sdm-token">{issuedToken.token}</code>
+              <div className="sdm-form-row">
+                <button
+                  type="button"
+                  onClick={() => void navigator.clipboard.writeText(issuedToken.token)}
+                >
+                  Copy token
+                </button>
+                <button type="button" onClick={() => handleRevoke(issuedToken.token)}>
+                  Revoke this token
+                </button>
+              </div>
+            </div>
+          )}
         </section>
 
         <section>

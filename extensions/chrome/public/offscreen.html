@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>SmartDownloadManager (background helper)</title>
+  </head>
+  <body>
+    <!--
+      This document is never shown to the user — it exists purely so the
+      MV3 service worker (which has no DOM, and therefore no
+      `navigator.clipboard`) has somewhere to delegate clipboard reads to.
+      See `extensions/shared/src/offscreen-core.ts` and
+      `background-core.ts::readClipboardText`.
+    -->
+    <script type="module" src="offscreen.js"></script>
+  </body>
+</html>

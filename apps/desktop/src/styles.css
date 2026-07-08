@@ -287,6 +287,40 @@ button.sdm-primary {
   margin: 0.25rem 0 0;
 }
 
+.sdm-status-dot {
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--sdm-status-neutral);
+  margin-right: 0.5rem;
+}
+
+.sdm-status-dot.sdm-connected {
+  background: var(--sdm-status-success);
+}
+
+.sdm-status-dot.sdm-disconnected {
+  background: var(--sdm-status-danger);
+}
+
+.sdm-pairing-token {
+  margin-top: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--sdm-border);
+  border-radius: 0.5rem;
+}
+
+.sdm-token {
+  display: block;
+  padding: 0.5rem;
+  margin: 0.5rem 0;
+  background: var(--sdm-bg);
+  border-radius: 0.35rem;
+  word-break: break-all;
+  font-size: 0.8rem;
+}
+
 .sdm-modal-actions {
   display: flex;
   justify-content: flex-end;
