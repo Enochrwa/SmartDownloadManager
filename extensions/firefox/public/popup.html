@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>SmartDownloadManager</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --sdm-accent: #2b6cb0;
+        --sdm-green: #2f855a;
+        --sdm-red: #c53030;
+      }
+      body {
+        margin: 0;
+        width: 320px;
+        font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      .sdm-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px;
+        border-bottom: 1px solid rgba(127, 127, 127, 0.25);
+      }
+      .sdm-header h1 {
+        font-size: 13px;
+        font-weight: 600;
+        margin: 0;
+        flex: 1;
+      }
+      #sdm-status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #999;
+        flex-shrink: 0;
+      }
+      #sdm-status-dot.sdm-connected {
+        background: var(--sdm-green);
+      }
+      #sdm-status-dot.sdm-disconnected {
+        background: var(--sdm-red);
+      }
+      #sdm-options-link {
+        font-size: 11px;
+        color: var(--sdm-accent);
+        text-decoration: none;
+      }
+      .sdm-section {
+        padding: 10px 12px;
+      }
+      #sdm-status-text {
+        font-size: 11px;
+        opacity: 0.8;
+      }
+      #sdm-paste-area {
+        width: 100%;
+        box-sizing: border-box;
+        height: 56px;
+        resize: vertical;
+        font: inherit;
+        padding: 6px;
+      }
+      #sdm-queue-button {
+        margin-top: 6px;
+        width: 100%;
+        padding: 6px;
+        cursor: pointer;
+      }
+      #sdm-drop-zone {
+        margin-top: 10px;
+        border: 2px dashed rgba(127, 127, 127, 0.4);
+        border-radius: 6px;
+        padding: 14px;
+        text-align: center;
+        font-size: 11px;
+        opacity: 0.75;
+      }
+      #sdm-drop-zone.sdm-drag-over {
+        border-color: var(--sdm-accent);
+        opacity: 1;
+      }
+      #sdm-jobs-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        max-height: 160px;
+        overflow-y: auto;
+      }
+      .sdm-job {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 4px 0;
+        border-bottom: 1px solid rgba(127, 127, 127, 0.15);
+      }
+      .sdm-job-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .sdm-job-status {
+        flex-shrink: 0;
+        opacity: 0.7;
+      }
+      .sdm-empty {
+        opacity: 0.6;
+        padding: 6px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="sdm-header">
+      <span id="sdm-status-dot"></span>
+      <h1>SmartDownloadManager</h1>
+      <a id="sdm-options-link" href="options.html">Settings</a>
+    </div>
+    <div class="sdm-section">
+      <div id="sdm-status-text">Checking connection…</div>
+    </div>
+    <div class="sdm-section">
+      <textarea
+        id="sdm-paste-area"
+        placeholder="Paste one or more links to queue them…"
+      ></textarea>
+      <button id="sdm-queue-button" type="button">Queue links</button>
+      <div id="sdm-drop-zone">Or drop a link here</div>
+    </div>
+    <div class="sdm-section">
+      <ul id="sdm-jobs-list"></ul>
+    </div>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

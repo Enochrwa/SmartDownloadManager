@@ -1,4 +1,4 @@
-import type { Job, JobEvent, RepairReport } from "@sdm/common-types";
+import type { Job, JobEvent, PairingStatus, PairingToken, RepairReport } from "@sdm/common-types";
 import { invoke } from "@tauri-apps/api/core";
 import { type UnlistenFn, listen } from "@tauri-apps/api/event";
 
@@ -51,6 +51,17 @@ export const api = {
   },
   cleanupOrphans(deleteFiles: boolean): Promise<string[]> {
     return invoke("cleanup_orphans", { delete: deleteFiles });
+  },
+  /** Sprint 11: polled by the "Extension connected" indicator. */
+  pairingStatus(): Promise<PairingStatus> {
+    return invoke("pairing_status");
+  },
+  /** Sprint 11: mints a token for the first-run pairing flow. */
+  pairingIssueToken(label?: string): Promise<PairingToken> {
+    return invoke("pairing_issue_token", { label });
+  },
+  pairingRevokeToken(token: string): Promise<void> {
+    return invoke("pairing_revoke_token", { token });
   },
   onJobEvent(handler: (event: JobEvent) => void): Promise<UnlistenFn> {
     return listen<JobEvent>("job-event", (e) => handler(e.payload));

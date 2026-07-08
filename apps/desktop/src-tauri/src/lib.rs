@@ -16,6 +16,12 @@ use sdm_engine::Engine;
 use state::{AppPaths, AppState};
 use tauri::Manager;
 
+/// Fixed loopback port the embedded Sprint 11 extension API listens on.
+/// Not user-configurable (yet) since the browser extension needs a fixed,
+/// documented address to point at by default; `SDM_EXTENSION_API_PORT`
+/// can override it for local dev/testing without a rebuild.
+const EXTENSION_API_PORT: u16 = 7890;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
@@ -37,6 +43,9 @@ pub fn run() {
             commands::repair_database,
             commands::backup_now,
             commands::cleanup_orphans,
+            commands::pairing_status,
+            commands::pairing_issue_token,
+            commands::pairing_revoke_token,
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
@@ -77,6 +86,7 @@ pub fn run() {
                     running: tokio::sync::Mutex::new(std::collections::HashMap::new()),
                     speed_tracker: tokio::sync::Mutex::new(std::collections::HashMap::new()),
                     paths,
+                    extension_api_port: EXTENSION_API_PORT,
                 });
                 app_handle.manage(state.clone());
 
@@ -94,7 +104,8 @@ pub fn run() {
                 }
 
                 commands::auto_resume_interrupted_jobs(app_handle.clone(), state.clone());
-                spawn_periodic_backups(state);
+                spawn_periodic_backups(state.clone());
+                spawn_extension_api(state);
             });
             Ok(())
         })
@@ -120,6 +131,52 @@ fn spawn_periodic_backups(state: Arc<AppState>) {
             {
                 tracing::warn!("periodic backup failed: {e}");
             }
+        }
+    });
+}
+
+/// Sprint 11: mount `sdm-server`'s exact same router (job CRUD, WebSocket
+/// progress, capture/pairing endpoints) on a loopback port, sharing this
+/// process's engine/pool instead of opening a second `sdmd` daemon and a
+/// second database connection. This is what makes the browser extension
+/// work against the desktop app directly, with no separate `sdmd`
+/// process required — see `crates/server/src/lib.rs`'s module doc for why
+/// `build_router` takes an already-open pool/engine specifically to
+/// support this.
+fn spawn_extension_api(state: Arc<AppState>) {
+    let port = std::env::var("SDM_EXTENSION_API_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(EXTENSION_API_PORT);
+
+    tokio::spawn(async move {
+        let router = sdm_server::build_router(
+            state.pool.clone(),
+            state.engine.clone(),
+            state.paths.default_download_dir.clone(),
+        );
+        let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::warn!(
+                    port,
+                    "extension API port unavailable ({e}); browser extension pairing will not \
+                     work until this is freed (another sdmd instance already running?)"
+                );
+                return;
+            }
+        };
+        tracing::info!(
+            port,
+            "extension API listening (Sprint 11 pairing + capture endpoints)"
+        );
+        if let Err(e) = axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        {
+            tracing::warn!("extension API server stopped: {e}");
         }
     });
 }

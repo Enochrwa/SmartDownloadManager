@@ -86,6 +86,46 @@ pub enum JobEventDto {
     },
 }
 
+/// Sprint 11: the browser-extension pairing flow, surfaced in the
+/// desktop app's settings panel as a first-run pairing card and an
+/// "Extension connected" status indicator.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingTokenDto {
+    pub token: String,
+    pub label: String,
+    pub created_at: String,
+}
+
+impl From<sdm_api_types::PairingTokenIssueResponse> for PairingTokenDto {
+    fn from(r: sdm_api_types::PairingTokenIssueResponse) -> Self {
+        PairingTokenDto {
+            token: r.token,
+            label: r.label,
+            created_at: r.created_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairedExtensionDto {
+    pub label: String,
+    pub created_at: String,
+    pub last_seen_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingStatusDto {
+    pub connected: bool,
+    pub paired_extensions: Vec<PairedExtensionDto>,
+    /// The port the embedded extension API is listening on, so the
+    /// frontend can show the user exactly what the extension should be
+    /// configured to point at (`http://127.0.0.1:<port>`).
+    pub api_port: u16,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepairReportDto {

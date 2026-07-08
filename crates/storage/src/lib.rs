@@ -1257,6 +1257,117 @@ pub async fn get_media_meta(
     }))
 }
 
+/// One issued browser-extension pairing token (Sprint 11). `sdmd` mints
+/// these on demand for the first-run pairing flow; the extension stores
+/// whichever one the user confirms and sends it back as a bearer token on
+/// every subsequent REST/WebSocket call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PairingTokenRecord {
+    pub token: String,
+    pub label: String,
+    pub created_at: String,
+    pub last_seen_at: Option<String>,
+    pub revoked_at: Option<String>,
+}
+
+fn row_to_pairing_token(row: sqlx::sqlite::SqliteRow) -> anyhow::Result<PairingTokenRecord> {
+    Ok(PairingTokenRecord {
+        token: row.try_get("token")?,
+        label: row.try_get("label")?,
+        created_at: row.try_get("created_at")?,
+        last_seen_at: row.try_get("last_seen_at")?,
+        revoked_at: row.try_get("revoked_at")?,
+    })
+}
+
+/// Mint a brand-new pairing token. Callers generate the random token value
+/// itself (see `sdm-server`'s use of a CSPRNG) — this just persists it.
+pub async fn insert_pairing_token(
+    pool: &SqlitePool,
+    token: &str,
+    label: &str,
+) -> anyhow::Result<()> {
+    sqlx::query("INSERT INTO pairing_tokens (token, label) VALUES (?1, ?2)")
+        .bind(token)
+        .bind(label)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Look up a pairing token — `None` if it was never issued. Callers are
+/// responsible for also checking `revoked_at.is_none()` before trusting it
+/// (kept separate from the query so a revoked-but-present token can still
+/// be told apart from one that never existed, e.g. for error messages).
+pub async fn get_pairing_token(
+    pool: &SqlitePool,
+    token: &str,
+) -> anyhow::Result<Option<PairingTokenRecord>> {
+    let row = sqlx::query(
+        "SELECT token, label, created_at, last_seen_at, revoked_at
+         FROM pairing_tokens WHERE token = ?1",
+    )
+    .bind(token)
+    .fetch_optional(pool)
+    .await?;
+    row.map(row_to_pairing_token).transpose()
+}
+
+/// Stamp a token's `last_seen_at` to now — called on every authenticated
+/// extension request, so the desktop app's "Extension connected" status
+/// indicator can tell a live extension from a stale, never-revisited one.
+pub async fn touch_pairing_token(pool: &SqlitePool, token: &str) -> anyhow::Result<()> {
+    let now = Utc::now().to_rfc3339();
+    sqlx::query("UPDATE pairing_tokens SET last_seen_at = ?1 WHERE token = ?2")
+        .bind(&now)
+        .bind(token)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// All non-revoked tokens, most recently created first — used to render
+/// the desktop app's paired-extensions list.
+pub async fn list_pairing_tokens(pool: &SqlitePool) -> anyhow::Result<Vec<PairingTokenRecord>> {
+    let rows = sqlx::query(
+        "SELECT token, label, created_at, last_seen_at, revoked_at
+         FROM pairing_tokens WHERE revoked_at IS NULL ORDER BY created_at DESC",
+    )
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter().map(row_to_pairing_token).collect()
+}
+
+/// Revoke a token (soft-delete) so a lost/uninstalled extension can no
+/// longer authenticate, without losing the audit trail of it having
+/// existed.
+pub async fn revoke_pairing_token(pool: &SqlitePool, token: &str) -> anyhow::Result<()> {
+    let now = Utc::now().to_rfc3339();
+    sqlx::query("UPDATE pairing_tokens SET revoked_at = ?1 WHERE token = ?2")
+        .bind(&now)
+        .bind(token)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Whether any non-revoked token has been seen within `within_seconds` of
+/// now — this is exactly the "Extension connected" boolean the desktop
+/// app's status indicator polls (docs/SPRINT_PLAN_PHASE2.md Sprint 11).
+pub async fn has_recent_pairing_activity(
+    pool: &SqlitePool,
+    within_seconds: i64,
+) -> anyhow::Result<bool> {
+    let tokens = list_pairing_tokens(pool).await?;
+    let now = Utc::now();
+    Ok(tokens.iter().any(|t| match &t.last_seen_at {
+        Some(seen) => chrono::DateTime::parse_from_rfc3339(seen)
+            .map(|dt| (now - dt.with_timezone(&Utc)).num_seconds() <= within_seconds)
+            .unwrap_or(false),
+        None => false,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1788,5 +1899,37 @@ mod tests {
 
         let parent = get_job(&pool, "parent-job").await.unwrap().unwrap();
         assert_eq!(parent.parent_job_id, None);
+    }
+
+    #[tokio::test]
+    async fn pairing_token_round_trips_and_reports_recent_activity() {
+        let pool = connect_in_memory().await.unwrap();
+
+        assert!(get_pairing_token(&pool, "tok-1").await.unwrap().is_none());
+        assert!(!has_recent_pairing_activity(&pool, 60).await.unwrap());
+
+        insert_pairing_token(&pool, "tok-1", "Chrome extension pairing")
+            .await
+            .unwrap();
+        let fetched = get_pairing_token(&pool, "tok-1").await.unwrap().unwrap();
+        assert_eq!(fetched.token, "tok-1");
+        assert!(fetched.last_seen_at.is_none());
+        assert!(fetched.revoked_at.is_none());
+
+        assert!(!has_recent_pairing_activity(&pool, 60).await.unwrap());
+
+        touch_pairing_token(&pool, "tok-1").await.unwrap();
+        let touched = get_pairing_token(&pool, "tok-1").await.unwrap().unwrap();
+        assert!(touched.last_seen_at.is_some());
+        assert!(has_recent_pairing_activity(&pool, 60).await.unwrap());
+
+        let listed = list_pairing_tokens(&pool).await.unwrap();
+        assert_eq!(listed.len(), 1);
+
+        revoke_pairing_token(&pool, "tok-1").await.unwrap();
+        let revoked = get_pairing_token(&pool, "tok-1").await.unwrap().unwrap();
+        assert!(revoked.revoked_at.is_some());
+        assert!(list_pairing_tokens(&pool).await.unwrap().is_empty());
+        assert!(!has_recent_pairing_activity(&pool, 60).await.unwrap());
     }
 }

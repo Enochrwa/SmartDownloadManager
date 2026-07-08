@@ -28,6 +28,11 @@ pub struct AppState {
     /// frontend (Sprint 6 live speed graph).
     pub speed_tracker: Mutex<HashMap<String, (std::time::Instant, u64)>>,
     pub paths: AppPaths,
+    /// Sprint 11: the port the embedded extension API (`sdm-server`'s
+    /// router, mounted in-process — see `lib.rs::spawn_extension_api`) is
+    /// listening on, so Tauri commands can report it back to the
+    /// settings panel's pairing UI.
+    pub extension_api_port: u16,
 }
 
 #[derive(Clone)]
