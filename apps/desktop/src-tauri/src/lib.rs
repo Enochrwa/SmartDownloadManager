@@ -82,6 +82,10 @@ pub fn run() {
 
                 let (extension_api_status_tx, extension_api_status_rx) =
                     tokio::sync::watch::channel(ExtensionApiStatus::Starting);
+                let configured_extension_api_port = std::env::var("SDM_EXTENSION_API_PORT")
+                    .ok()
+                    .and_then(|p| p.parse().ok())
+                    .unwrap_or(EXTENSION_API_PORT);
 
                 let state = Arc::new(AppState {
                     engine: Arc::new(Engine::new(pool.clone())),
@@ -89,7 +93,7 @@ pub fn run() {
                     running: tokio::sync::Mutex::new(std::collections::HashMap::new()),
                     speed_tracker: tokio::sync::Mutex::new(std::collections::HashMap::new()),
                     paths,
-                    extension_api_port: EXTENSION_API_PORT,
+                    extension_api_port: configured_extension_api_port,
                     extension_api_status: extension_api_status_rx,
                 });
                 app_handle.manage(state.clone());
@@ -189,10 +193,7 @@ fn spawn_extension_api(
     state: Arc<AppState>,
     status_tx: tokio::sync::watch::Sender<ExtensionApiStatus>,
 ) {
-    let configured_port = std::env::var("SDM_EXTENSION_API_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(EXTENSION_API_PORT);
+    let configured_port = state.extension_api_port;
 
     tokio::spawn(async move {
         let router = sdm_server::build_router(
