@@ -1574,14 +1574,20 @@ async fn search_jobs_regex(
     let mut results = Vec::new();
     for row in rows {
         let record = row_to_search_result(row)?;
-        let haystack = format!(
-            "{} {} {} {}",
-            record.filename,
-            record.url,
+        // Match each field independently rather than concatenating them
+        // into one haystack: a concatenated haystack breaks anchors like
+        // `\.iso$` (users expect that to mean "filename ends with
+        // .iso", not "the string formed by gluing filename+url+
+        // category+status together happens to end with .iso", which is
+        // almost never what's actually at the end once url/category/
+        // status are appended after the filename).
+        let fields = [
+            record.filename.as_str(),
+            record.url.as_str(),
             record.category.as_deref().unwrap_or(""),
             record.status.as_str(),
-        );
-        if re.is_match(&haystack) {
+        ];
+        if fields.iter().any(|field| re.is_match(field)) {
             results.push(record);
             if results.len() as i64 >= limit {
                 break;
