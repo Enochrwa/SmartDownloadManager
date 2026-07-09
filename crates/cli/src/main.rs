@@ -110,6 +110,22 @@ enum Commands {
         /// yt-dlp only: embed the site's thumbnail as cover art.
         #[arg(long = "embed-thumbnail")]
         embed_thumbnail: bool,
+        /// Sprint 12: route this download through a proxy —
+        /// `socks5h://host:port` (SOCKS5, proxy-side DNS — the usual
+        /// choice), `socks4://host:port`, or `http(s)://host:port`.
+        /// Overrides the global default proxy (`sdm set-proxy`) for this
+        /// download only.
+        #[arg(long)]
+        proxy: Option<String>,
+        /// Username for --proxy, if it requires auth.
+        #[arg(long = "proxy-user")]
+        proxy_user: Option<String>,
+        /// Password for --proxy. Stored encrypted (OS keychain, or an
+        /// AES-256-GCM-encrypted fallback if no keychain is reachable —
+        /// see `sdm_storage::credentials`) if this job is later resumed;
+        /// never written anywhere in plaintext.
+        #[arg(long = "proxy-pass")]
+        proxy_pass: Option<String>,
     },
     /// Resume a previously started job by ID.
     Resume {
@@ -162,6 +178,89 @@ enum Commands {
     /// available formats — use a format_id from here with
     /// `sdm download --via-ytdlp --media-quality <format_id> <url>`.
     Probe { url: String },
+    /// Sprint 12: full-text + filtered search across download history and
+    /// the active queue (filename, URL, category, status, date range).
+    Search {
+        /// Free-text query (matches filename, URL, category, status).
+        /// Omit to just apply the filter flags below.
+        text: Option<String>,
+        /// Treat `text` as a regular expression instead of a full-text
+        /// query. FTS5 has no native regex mode, so this path is matched
+        /// in-process against the filtered candidate rows.
+        #[arg(long)]
+        regex: bool,
+        #[arg(long)]
+        category: Option<String>,
+        /// One of: queued, probing, downloading, paused, verifying,
+        /// completed, failed.
+        #[arg(long)]
+        status: Option<String>,
+        /// Inclusive RFC3339 lower bound on `created_at`, e.g.
+        /// "2026-01-01T00:00:00Z".
+        #[arg(long = "from")]
+        date_from: Option<String>,
+        /// Inclusive RFC3339 upper bound on `created_at`.
+        #[arg(long = "to")]
+        date_to: Option<String>,
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+    },
+    /// Sprint 12: set the global default proxy (used by any download
+    /// that doesn't pass its own `--proxy`). Credentials are stored
+    /// encrypted — see `sdm_storage::credentials`.
+    SetProxy {
+        /// e.g. `socks5h://host:port`, `socks4://host:port`,
+        /// `http://host:port`.
+        url: String,
+        #[arg(long = "user")]
+        user: Option<String>,
+        #[arg(long = "pass")]
+        pass: Option<String>,
+    },
+    /// Sprint 12: clear the global default proxy (and delete its stored
+    /// credential, if any).
+    ClearProxy,
+    /// Sprint 12: show the currently configured global default proxy
+    /// (URL only — the credential itself is never printed).
+    ShowProxy,
+}
+
+/// Encodes a username/password pair as the single string
+/// `CredentialStore` stores per reference (it's a generic secret-string
+/// store, not proxy-specific) — `\n` is a safe separator since neither
+/// half of a proxy credential can legitimately contain a literal
+/// newline. Kept as a named pair of functions rather than inlined at
+/// both call sites (`SetProxy` and the global-proxy-resolving path
+/// below) so the format only has one place to get wrong.
+fn encode_proxy_credential(user: &str, pass: &str) -> String {
+    format!("{user}\n{pass}")
+}
+
+fn decode_proxy_credential(stored: &str) -> Option<(String, String)> {
+    stored
+        .split_once('\n')
+        .map(|(u, p)| (u.to_string(), p.to_string()))
+}
+
+/// Sprint 12: build the shared `Engine` used by every CLI command,
+/// honoring the persisted global default proxy (`sdm set-proxy`) if one
+/// is configured. Per-download `--proxy` (see the `Commands::Download`
+/// arm) overrides this on a per-invocation basis by constructing its own
+/// `Engine::new_with_proxy` locally instead of using this one.
+async fn build_engine_with_global_proxy(pool: &sdm_storage::SqlitePool) -> anyhow::Result<Engine> {
+    let Some(settings) = sdm_storage::get_global_proxy(pool).await? else {
+        return Ok(Engine::new(pool.clone()));
+    };
+
+    let mut cfg = sdm_protocols::ProxyConfig::new(settings.url);
+    if let Some(credential_ref) = &settings.credential_ref {
+        let store = sdm_storage::CredentialStore::new(pool.clone());
+        let stored = store.retrieve(credential_ref).await?;
+        if let Some((user, pass)) = decode_proxy_credential(&stored) {
+            cfg = cfg.with_auth(user, pass);
+        }
+    }
+    Ok(Engine::new_with_proxy(pool.clone(), Some(&cfg))?)
 }
 
 fn sdm_home() -> PathBuf {
@@ -288,7 +387,7 @@ async fn main() -> anyhow::Result<()> {
         .db
         .unwrap_or_else(|| home.join("jobs.db").to_string_lossy().to_string());
     let pool = sdm_storage::connect(&db_path).await?;
-    let engine = Engine::new(pool.clone());
+    let engine = build_engine_with_global_proxy(&pool).await?;
 
     match cli.command {
         Commands::Download {
@@ -310,7 +409,28 @@ async fn main() -> anyhow::Result<()> {
             media_quality,
             subs,
             embed_thumbnail,
+            proxy,
+            proxy_user,
+            proxy_pass,
         } => {
+            // Sprint 12: --proxy applies to every transport in this arm
+            // that shares Engine's single reqwest client (HTTP, WebDAV,
+            // DASH, HLS, Metalink — see crates/engine/src/download.rs's
+            // `self.client` call sites). FTP (suppaftp) and BitTorrent
+            // (librqbit) use their own transports and don't go through
+            // this client yet — not proxied by this flag in this
+            // release; see Engine::new_with_proxy's doc comment.
+            let engine = match &proxy {
+                Some(url) => {
+                    let mut cfg = sdm_protocols::ProxyConfig::new(url.clone());
+                    if let (Some(u), Some(p)) = (&proxy_user, &proxy_pass) {
+                        cfg = cfg.with_auth(u.clone(), p.clone());
+                    }
+                    sdm_engine::Engine::new_with_proxy(pool.clone(), Some(&cfg))?
+                }
+                None => engine,
+            };
+
             if via_ytdlp || looks_like_ytdlp_site(&url) {
                 let destination_dir = PathBuf::from(output.unwrap_or_else(|| ".".to_string()));
                 let subtitle_langs = subs
@@ -947,6 +1067,100 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
         }
+        Commands::Search {
+            text,
+            regex,
+            category,
+            status,
+            date_from,
+            date_to,
+            limit,
+        } => {
+            let status = status
+                .as_deref()
+                .map(|s| s.parse::<sdm_storage::JobStatus>())
+                .transpose()?;
+            let query = sdm_storage::SearchQuery {
+                text,
+                regex,
+                category,
+                status,
+                date_from,
+                date_to,
+                limit: Some(limit),
+            };
+            let started = std::time::Instant::now();
+            let results = sdm_storage::search_jobs(&pool, &query).await?;
+            if results.is_empty() {
+                println!("No matches.");
+            }
+            for r in &results {
+                println!(
+                    "{}  {:<8}  {:<12}  {:<12}  {}",
+                    r.job_id,
+                    r.job_kind.as_str(),
+                    r.status.as_str(),
+                    r.category.as_deref().unwrap_or("-"),
+                    r.filename,
+                );
+            }
+            eprintln!(
+                "{} match(es) in {:.1}ms",
+                results.len(),
+                started.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+        Commands::SetProxy { url, user, pass } => {
+            // Validate the URL is actually usable before persisting it —
+            // catches a typo'd scheme immediately instead of only at the
+            // next download.
+            sdm_protocols::build_client_with_proxy(Some(&sdm_protocols::ProxyConfig::new(
+                url.clone(),
+            )))?;
+
+            let credential_ref = match (user, pass) {
+                (Some(u), Some(p)) => {
+                    let store = sdm_storage::CredentialStore::new(pool.clone());
+                    Some(store.store(&encode_proxy_credential(&u, &p)).await?)
+                }
+                (None, None) => None,
+                _ => {
+                    eprintln!("--user and --pass must be given together (or neither, for an unauthenticated proxy)");
+                    std::process::exit(1);
+                }
+            };
+            sdm_storage::set_global_proxy(
+                &pool,
+                Some(&sdm_storage::ProxySettings {
+                    url,
+                    credential_ref,
+                }),
+            )
+            .await?;
+            println!("Global proxy set.");
+        }
+        Commands::ClearProxy => {
+            if let Some(existing) = sdm_storage::get_global_proxy(&pool).await? {
+                if let Some(credential_ref) = existing.credential_ref {
+                    let store = sdm_storage::CredentialStore::new(pool.clone());
+                    store.delete(&credential_ref).await?;
+                }
+            }
+            sdm_storage::set_global_proxy(&pool, None).await?;
+            println!("Global proxy cleared.");
+        }
+        Commands::ShowProxy => match sdm_storage::get_global_proxy(&pool).await? {
+            Some(settings) => println!(
+                "{}{}",
+                settings.url,
+                if settings.credential_ref.is_some() {
+                    " (authenticated)"
+                } else {
+                    ""
+                }
+            ),
+            None => println!("No global proxy configured."),
+        },
     }
 
     Ok(())

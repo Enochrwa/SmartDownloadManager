@@ -11,7 +11,16 @@ anyhow.workspace = true
 serde.workspace = true
 chrono.workspace = true
 uuid.workspace = true
+regex.workspace = true
+aes-gcm.workspace = true
+keyring.workspace = true
+rand.workspace = true
+hex.workspace = true
+thiserror.workspace = true
 
 [lib]
 name = "sdm_storage"
 path = "src/lib.rs"
+
+[dev-dependencies]
+tempfile.workspace = true

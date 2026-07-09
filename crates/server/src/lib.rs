@@ -74,6 +74,7 @@ pub fn build_router(
         .route("/jobs/:id/resume", post(routes::jobs::resume_job))
         .route("/capture", post(routes::capture::capture))
         .route("/capture/batch", post(routes::capture::capture_batch))
+        .route("/search", get(routes::search::search))
         .route("/ws/progress", get(routes::ws::ws_progress))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),

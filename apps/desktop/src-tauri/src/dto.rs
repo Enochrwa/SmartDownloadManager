@@ -120,10 +120,18 @@ pub struct PairedExtensionDto {
 pub struct PairingStatusDto {
     pub connected: bool,
     pub paired_extensions: Vec<PairedExtensionDto>,
-    /// The port the embedded extension API is listening on, so the
-    /// frontend can show the user exactly what the extension should be
-    /// configured to point at (`http://127.0.0.1:<port>`).
-    pub api_port: u16,
+    /// The port the embedded extension API is *actually* listening on
+    /// right now — `None` if it hasn't finished starting yet or failed to
+    /// bind (see `api_error`). Previously this always reported the
+    /// configured port regardless of whether the bind succeeded, which is
+    /// what caused the "Couldn't reach sdmd at this address" bug: the
+    /// panel would confidently show `http://127.0.0.1:7890` even when
+    /// nothing was listening there.
+    pub api_port: Option<u16>,
+    /// Set when the embedded server failed to bind (after retries/
+    /// fallback-port-scan) or hasn't started yet, so the UI can show a
+    /// real diagnostic instead of a silently-wrong address.
+    pub api_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

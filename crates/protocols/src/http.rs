@@ -20,6 +20,50 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::error::{classify_status, classify_transport_error, parse_retry_after, ErrorClass};
 
+/// Sprint 12: proxy configuration for the HTTP transport (also reused by
+/// WebDAV, which shares this crate's `build_client*`). SOCKS4/SOCKS5/
+/// HTTP/HTTPS are all expressed as a single scheme-prefixed URL —
+/// reqwest's `Proxy` type (with the `socks` feature enabled — see the
+/// workspace `Cargo.toml`) already understands `socks4://`, `socks5://`,
+/// `socks5h://` (SOCKS5 with proxy-side DNS resolution — the right
+/// default for privacy: the proxy resolves the hostname, not the local
+/// resolver), `http://`, and `https://` proxy URLs natively, so this type
+/// stays a thin, validated wrapper rather than reimplementing any of the
+/// proxy protocols itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxyConfig {
+    /// e.g. `socks5h://127.0.0.1:1080`, `http://proxy.example.com:8080`.
+    pub url: String,
+    /// If set, sent as the proxy's `Proxy-Authorization` (HTTP proxies)
+    /// or the SOCKS5 username/password subnegotiation (RFC 1929).
+    pub username: Option<String>,
+    pub password: Option<String>,
+}
+
+impl ProxyConfig {
+    pub fn new(url: impl Into<String>) -> Self {
+        ProxyConfig {
+            url: url.into(),
+            username: None,
+            password: None,
+        }
+    }
+
+    pub fn with_auth(mut self, username: impl Into<String>, password: impl Into<String>) -> Self {
+        self.username = Some(username.into());
+        self.password = Some(password.into());
+        self
+    }
+
+    fn to_reqwest_proxy(&self) -> Result<reqwest::Proxy, ProtoError> {
+        let mut proxy = reqwest::Proxy::all(self.url.as_str()).map_err(ProtoError::InvalidProxy)?;
+        if let (Some(user), Some(pass)) = (&self.username, &self.password) {
+            proxy = proxy.basic_auth(user, pass);
+        }
+        Ok(proxy)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ProtoError {
     #[error("transport error: {0}")]
@@ -28,6 +72,14 @@ pub enum ProtoError {
     Http { status: u16, class: ErrorClass },
     #[error("local I/O error: {0}")]
     Io(#[from] std::io::Error),
+    /// Sprint 12: the configured proxy URL was rejected by reqwest at
+    /// client-build time (unknown scheme, unparseable address, etc.) —
+    /// surfaced distinctly from `Transport` since this is a
+    /// configuration mistake, not a network failure, and callers (the
+    /// CLI, the settings panel) should say so rather than "connection
+    /// failed".
+    #[error("invalid proxy configuration: {0}")]
+    InvalidProxy(#[source] reqwest::Error),
 }
 
 impl ProtoError {
@@ -36,6 +88,7 @@ impl ProtoError {
             ProtoError::Transport(_, class) => class.clone(),
             ProtoError::Http { class, .. } => class.clone(),
             ProtoError::Io(_) => ErrorClass::Other,
+            ProtoError::InvalidProxy(_) => ErrorClass::Other,
         }
     }
 }
@@ -49,6 +102,21 @@ pub fn build_client() -> Client {
         .timeout(Duration::from_secs(60 * 30))
         .build()
         .expect("reqwest client config is valid")
+}
+
+/// Sprint 12: same as [`build_client`], but routed through `proxy` when
+/// given. `None` is identical to `build_client()` (explicit `Option`
+/// rather than an empty-string sentinel, so "no proxy" can't be
+/// confused with a misconfigured one).
+pub fn build_client_with_proxy(proxy: Option<&ProxyConfig>) -> Result<Client, ProtoError> {
+    let mut builder = Client::builder()
+        .use_rustls_tls()
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(60 * 30));
+    if let Some(cfg) = proxy {
+        builder = builder.proxy(cfg.to_reqwest_proxy()?);
+    }
+    builder.build().map_err(ProtoError::InvalidProxy)
 }
 
 #[derive(Debug, Clone, Default)]

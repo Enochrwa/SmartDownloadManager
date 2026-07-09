@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 pub use sqlx::SqlitePool;
 
+pub mod credentials;
+pub use credentials::{CredentialError, CredentialStore};
+
 /// Open (creating if needed) the SQLite database at `db_path` and run all
 /// pending migrations.
 pub async fn connect(db_path: &str) -> anyhow::Result<SqlitePool> {
@@ -1368,6 +1371,341 @@ pub async fn has_recent_pairing_activity(
     }))
 }
 
+/// One row of a search result — deliberately a separate, smaller type
+/// from `JobRecord` rather than reusing it: `JobRecord`/`row_to_job` are
+/// threaded through the engine, server routes, CLI, and desktop app
+/// already, and widening that shared type for a search-only concern
+/// (plus its FTS join) would touch every one of those call sites for no
+/// benefit — search callers only need enough to render a result row and
+/// look the job back up by id if the user acts on it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SearchResultRecord {
+    pub job_id: String,
+    pub url: String,
+    pub filename: String,
+    pub category: Option<String>,
+    pub status: JobStatus,
+    pub job_kind: JobKind,
+    pub created_at: String,
+}
+
+fn row_to_search_result(row: sqlx::sqlite::SqliteRow) -> anyhow::Result<SearchResultRecord> {
+    let status_str: String = row.try_get("status")?;
+    let job_kind_str: String = row.try_get("job_kind")?;
+    Ok(SearchResultRecord {
+        job_id: row.try_get("id")?,
+        url: row.try_get("url")?,
+        filename: row.try_get("destination")?,
+        category: row.try_get("category")?,
+        status: status_str.parse()?,
+        job_kind: job_kind_str.parse()?,
+        created_at: row.try_get("created_at")?,
+    })
+}
+
+/// Sprint 12 search filters — shared by `sdm search` (CLI), `GET /search`
+/// (REST), and the desktop app's search bar, so all three surfaces stay
+/// behaviorally identical by construction rather than by convention.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchQuery {
+    /// Free-text query. In FTS mode this is passed to SQLite's FTS5
+    /// `MATCH` (tokenized, so "report final" matches either token in any
+    /// order); in regex mode it's compiled with the `regex` crate and
+    /// applied in-process against filename/url/category/status.
+    pub text: Option<String>,
+    /// Sprint 12 DoD: `sdm search --regex`. FTS5 has no regex mode of its
+    /// own (its tokenizer only supports token/prefix matching), so this
+    /// path applies status/category/date filters as a SQL pushdown first
+    /// (keeps it fast even on a large history) and then regex-matches
+    /// only the surviving candidate rows in Rust.
+    pub regex: bool,
+    pub category: Option<String>,
+    pub status: Option<JobStatus>,
+    /// Inclusive, RFC3339 (matches how `created_at` is stored — see
+    /// `insert_job_with_kind`).
+    pub date_from: Option<String>,
+    pub date_to: Option<String>,
+    /// Default 50 — a search box result list, not a full export; callers
+    /// that want everything can pass a large explicit limit.
+    pub limit: Option<i64>,
+}
+
+/// Sprint 12: `sdm search` / `GET /search` — full-text + filtered search
+/// across download history and the active queue. See `SearchQuery` for
+/// the filter surface and `docs/SPRINT_PLAN_PHASE2.md` Sprint 12's DoD
+/// ("`sdm search --regex` against a seeded history of 100+ past downloads
+/// returns correct filtered results in under 100ms").
+pub async fn search_jobs(
+    pool: &SqlitePool,
+    query: &SearchQuery,
+) -> anyhow::Result<Vec<SearchResultRecord>> {
+    let limit = query.limit.unwrap_or(50).clamp(1, 1000);
+
+    if query.regex {
+        return search_jobs_regex(pool, query, limit).await;
+    }
+
+    match &query.text {
+        Some(text) if !text.trim().is_empty() => search_jobs_fts(pool, query, text, limit).await,
+        _ => search_jobs_filtered_only(pool, query, limit).await,
+    }
+}
+
+/// FTS5 path: `MATCH` against the free-text query, joined back to `jobs`
+/// for the status/category/date filters and to materialize the result
+/// row. `snippet`/`bm25` ranking isn't exposed to callers (yet) — plain
+/// `rank` ordering (FTS5's default bm25) is enough for a search-box-sized
+/// result list.
+async fn search_jobs_fts(
+    pool: &SqlitePool,
+    query: &SearchQuery,
+    text: &str,
+    limit: i64,
+) -> anyhow::Result<Vec<SearchResultRecord>> {
+    // FTS5 query syntax gives `"`, `*`, `AND`/`OR`/`NOT`, column filters
+    // (`col:`), etc. special meaning. A search box shouldn't require
+    // users to know FTS5 syntax (or let a stray `"` throw a syntax
+    // error), so each whitespace-separated term is quoted individually
+    // and re-joined — this makes every term a literal phrase match,
+    // AND'ed together (FTS5's implicit default), with no character in
+    // the user's input able to change the query's structure.
+    let sanitized = text
+        .split_whitespace()
+        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if sanitized.is_empty() {
+        return search_jobs_filtered_only(pool, query, limit).await;
+    }
+
+    let rows = sqlx::query(
+        "SELECT j.id, j.url, j.destination, j.category, j.status, j.job_kind, j.created_at
+         FROM jobs_fts f
+         JOIN jobs j ON j.id = f.job_id
+         WHERE jobs_fts MATCH ?1
+           AND (?2 IS NULL OR j.category = ?2)
+           AND (?3 IS NULL OR j.status = ?3)
+           AND (?4 IS NULL OR j.created_at >= ?4)
+           AND (?5 IS NULL OR j.created_at <= ?5)
+         ORDER BY rank
+         LIMIT ?6",
+    )
+    .bind(&sanitized)
+    .bind(&query.category)
+    .bind(query.status.as_ref().map(JobStatus::as_str))
+    .bind(&query.date_from)
+    .bind(&query.date_to)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter().map(row_to_search_result).collect()
+}
+
+/// No free-text term: a plain filtered listing (still useful — e.g.
+/// "everything in category X from last week").
+async fn search_jobs_filtered_only(
+    pool: &SqlitePool,
+    query: &SearchQuery,
+    limit: i64,
+) -> anyhow::Result<Vec<SearchResultRecord>> {
+    let rows = sqlx::query(
+        "SELECT id, url, destination, category, status, job_kind, created_at
+         FROM jobs
+         WHERE (?1 IS NULL OR category = ?1)
+           AND (?2 IS NULL OR status = ?2)
+           AND (?3 IS NULL OR created_at >= ?3)
+           AND (?4 IS NULL OR created_at <= ?4)
+         ORDER BY created_at DESC
+         LIMIT ?5",
+    )
+    .bind(&query.category)
+    .bind(query.status.as_ref().map(JobStatus::as_str))
+    .bind(&query.date_from)
+    .bind(&query.date_to)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter().map(row_to_search_result).collect()
+}
+
+/// Regex path: pushes the cheap structured filters (category/status/date
+/// range) into SQL to keep the candidate set small, then applies the
+/// user's regex in Rust against filename, URL, category, and status. A
+/// full SQLite scan-and-filter like this is trivially fast at the queue/
+/// history scale this app targets (thousands of rows, not millions) —
+/// the Sprint 12 DoD's "100+ past downloads ... under 100ms" bar is
+/// several orders of magnitude below where this would need optimizing
+/// (e.g. an on-disk regex-compatible index) instead.
+async fn search_jobs_regex(
+    pool: &SqlitePool,
+    query: &SearchQuery,
+    limit: i64,
+) -> anyhow::Result<Vec<SearchResultRecord>> {
+    let Some(pattern) = query.text.as_deref().filter(|t| !t.trim().is_empty()) else {
+        return search_jobs_filtered_only(pool, query, limit).await;
+    };
+    let re = regex::RegexBuilder::new(pattern)
+        .case_insensitive(true)
+        .build()
+        .map_err(|e| anyhow::anyhow!("invalid regex: {e}"))?;
+
+    // Pull every row matching the structured filters (no LIMIT yet — the
+    // regex still needs to run over the full candidate set before we can
+    // know which `limit` rows to keep), then filter + truncate in Rust.
+    let rows = sqlx::query(
+        "SELECT id, url, destination, category, status, job_kind, created_at
+         FROM jobs
+         WHERE (?1 IS NULL OR category = ?1)
+           AND (?2 IS NULL OR status = ?2)
+           AND (?3 IS NULL OR created_at >= ?3)
+           AND (?4 IS NULL OR created_at <= ?4)
+         ORDER BY created_at DESC",
+    )
+    .bind(&query.category)
+    .bind(query.status.as_ref().map(JobStatus::as_str))
+    .bind(&query.date_from)
+    .bind(&query.date_to)
+    .fetch_all(pool)
+    .await?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        let record = row_to_search_result(row)?;
+        // Match each field independently rather than concatenating them
+        // into one haystack: a concatenated haystack breaks anchors like
+        // `\.iso$` (users expect that to mean "filename ends with
+        // .iso", not "the string formed by gluing filename+url+
+        // category+status together happens to end with .iso", which is
+        // almost never what's actually at the end once url/category/
+        // status are appended after the filename).
+        let fields = [
+            record.filename.as_str(),
+            record.url.as_str(),
+            record.category.as_deref().unwrap_or(""),
+            record.status.as_str(),
+        ];
+        if fields.iter().any(|field| re.is_match(field)) {
+            results.push(record);
+            if results.len() as i64 >= limit {
+                break;
+            }
+        }
+    }
+    Ok(results)
+}
+
+/// Set (or clear, with `None`) a job's category — the write side of
+/// Sprint 12's `category` filter. Kept as its own function for the same
+/// reason `set_job_status`/`set_job_error` are separate from the general
+/// update helpers: one clear, narrow, testable responsibility.
+pub async fn set_job_category(
+    pool: &SqlitePool,
+    id: &str,
+    category: Option<&str>,
+) -> anyhow::Result<()> {
+    let now = Utc::now().to_rfc3339();
+    sqlx::query("UPDATE jobs SET category = ?1, updated_at = ?2 WHERE id = ?3")
+        .bind(category)
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Sprint 12: the global default proxy (used when a job has no
+/// per-job override — see `jobs.proxy_url`/`proxy_credential_ref`).
+/// `credential_ref` is opaque — resolve it via
+/// `CredentialStore::retrieve_opt` to get the actual username/password,
+/// never stored here directly.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxySettings {
+    pub url: String,
+    pub credential_ref: Option<String>,
+}
+
+pub async fn get_global_proxy(pool: &SqlitePool) -> anyhow::Result<Option<ProxySettings>> {
+    let row =
+        sqlx::query("SELECT proxy_url, proxy_credential_ref FROM global_settings WHERE id = 1")
+            .fetch_optional(pool)
+            .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let url: Option<String> = row.try_get("proxy_url")?;
+    let credential_ref: Option<String> = row.try_get("proxy_credential_ref")?;
+    Ok(url.map(|url| ProxySettings {
+        url,
+        credential_ref,
+    }))
+}
+
+/// Set (or clear, with `None`) the global default proxy. Callers are
+/// responsible for having already stored any credential via
+/// `CredentialStore::store` and passing its ref here — this function
+/// never sees a plaintext secret.
+pub async fn set_global_proxy(
+    pool: &SqlitePool,
+    settings: Option<&ProxySettings>,
+) -> anyhow::Result<()> {
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO global_settings (id, proxy_url, proxy_credential_ref, updated_at)
+         VALUES (1, ?1, ?2, ?3)
+         ON CONFLICT(id) DO UPDATE SET
+            proxy_url = excluded.proxy_url,
+            proxy_credential_ref = excluded.proxy_credential_ref,
+            updated_at = excluded.updated_at",
+    )
+    .bind(settings.map(|s| s.url.as_str()))
+    .bind(settings.and_then(|s| s.credential_ref.as_deref()))
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Per-job proxy override — takes precedence over the global default
+/// when set. See `Engine::new_with_proxy`'s doc comment for the current
+/// state of *enforcing* this (persisted now; not yet read by the
+/// segment-download pipeline).
+pub async fn set_job_proxy(
+    pool: &SqlitePool,
+    id: &str,
+    settings: Option<&ProxySettings>,
+) -> anyhow::Result<()> {
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE jobs SET proxy_url = ?1, proxy_credential_ref = ?2, updated_at = ?3 WHERE id = ?4",
+    )
+    .bind(settings.map(|s| s.url.as_str()))
+    .bind(settings.and_then(|s| s.credential_ref.as_deref()))
+    .bind(&now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_job_proxy(pool: &SqlitePool, id: &str) -> anyhow::Result<Option<ProxySettings>> {
+    let row = sqlx::query("SELECT proxy_url, proxy_credential_ref FROM jobs WHERE id = ?1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let url: Option<String> = row.try_get("proxy_url")?;
+    let credential_ref: Option<String> = row.try_get("proxy_credential_ref")?;
+    Ok(url.map(|url| ProxySettings {
+        url,
+        credential_ref,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1931,5 +2269,197 @@ mod tests {
         assert!(revoked.revoked_at.is_some());
         assert!(list_pairing_tokens(&pool).await.unwrap().is_empty());
         assert!(!has_recent_pairing_activity(&pool, 60).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn global_proxy_settings_round_trip_and_clear() {
+        let pool = connect_in_memory().await.unwrap();
+
+        assert_eq!(get_global_proxy(&pool).await.unwrap(), None);
+
+        let settings = ProxySettings {
+            url: "socks5h://127.0.0.1:1080".to_string(),
+            credential_ref: Some("kc:abc123".to_string()),
+        };
+        set_global_proxy(&pool, Some(&settings)).await.unwrap();
+        assert_eq!(get_global_proxy(&pool).await.unwrap(), Some(settings));
+
+        set_global_proxy(&pool, None).await.unwrap();
+        assert_eq!(get_global_proxy(&pool).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn per_job_proxy_override_round_trips_independently_of_global() {
+        let pool = connect_in_memory().await.unwrap();
+        insert_job(&pool, "job-1", "https://example.com/f", "/tmp/f")
+            .await
+            .unwrap();
+
+        assert_eq!(get_job_proxy(&pool, "job-1").await.unwrap(), None);
+
+        let job_settings = ProxySettings {
+            url: "http://proxy.internal:8080".to_string(),
+            credential_ref: None,
+        };
+        set_job_proxy(&pool, "job-1", Some(&job_settings))
+            .await
+            .unwrap();
+        assert_eq!(
+            get_job_proxy(&pool, "job-1").await.unwrap(),
+            Some(job_settings)
+        );
+        // Global default is unaffected by the per-job override.
+        assert_eq!(get_global_proxy(&pool).await.unwrap(), None);
+    }
+
+    async fn seed_search_fixture(pool: &SqlitePool) {
+        insert_job(
+            pool,
+            "job-report",
+            "https://example.com/reports/final-report.pdf",
+            "/downloads/final-report.pdf",
+        )
+        .await
+        .unwrap();
+        set_job_category(pool, "job-report", Some("documents"))
+            .await
+            .unwrap();
+
+        insert_job(
+            pool,
+            "job-linux-iso",
+            "https://example.com/os/ubuntu-24.04.iso",
+            "/downloads/ubuntu-24.04.iso",
+        )
+        .await
+        .unwrap();
+        set_job_category(pool, "job-linux-iso", Some("isos"))
+            .await
+            .unwrap();
+        set_job_status(pool, "job-linux-iso", JobStatus::Completed)
+            .await
+            .unwrap();
+
+        insert_job(
+            pool,
+            "job-song",
+            "https://example.com/music/summer-report-mix.mp3",
+            "/downloads/summer-report-mix.mp3",
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn search_fts_matches_filename_and_url_tokens() {
+        let pool = connect_in_memory().await.unwrap();
+        seed_search_fixture(&pool).await;
+
+        let results = search_jobs(
+            &pool,
+            &SearchQuery {
+                text: Some("report".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let ids: Vec<_> = results.iter().map(|r| r.job_id.as_str()).collect();
+        assert!(ids.contains(&"job-report"));
+        assert!(ids.contains(&"job-song")); // "summer-report-mix" contains the token too
+        assert!(!ids.contains(&"job-linux-iso"));
+    }
+
+    #[tokio::test]
+    async fn search_respects_category_and_status_filters() {
+        let pool = connect_in_memory().await.unwrap();
+        seed_search_fixture(&pool).await;
+
+        let by_category = search_jobs(
+            &pool,
+            &SearchQuery {
+                category: Some("isos".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(by_category.len(), 1);
+        assert_eq!(by_category[0].job_id, "job-linux-iso");
+
+        let by_status = search_jobs(
+            &pool,
+            &SearchQuery {
+                status: Some(JobStatus::Completed),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(by_status.len(), 1);
+        assert_eq!(by_status[0].job_id, "job-linux-iso");
+    }
+
+    #[tokio::test]
+    async fn search_regex_mode_matches_pattern_across_fields() {
+        let pool = connect_in_memory().await.unwrap();
+        seed_search_fixture(&pool).await;
+
+        let results = search_jobs(
+            &pool,
+            &SearchQuery {
+                text: Some(r"\.iso$".to_string()),
+                regex: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].job_id, "job-linux-iso");
+
+        // Invalid pattern surfaces as an error, not a silent empty result.
+        let err = search_jobs(
+            &pool,
+            &SearchQuery {
+                text: Some("(unclosed".to_string()),
+                regex: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn search_with_no_text_falls_back_to_plain_filtered_listing() {
+        let pool = connect_in_memory().await.unwrap();
+        seed_search_fixture(&pool).await;
+
+        let results = search_jobs(&pool, &SearchQuery::default()).await.unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn search_fts_query_is_immune_to_syntax_injection() {
+        let pool = connect_in_memory().await.unwrap();
+        seed_search_fixture(&pool).await;
+
+        // A raw string containing FTS5-meaningful characters must not
+        // error out or be interpreted as query syntax — every term is
+        // quoted as a literal phrase before being sent to MATCH.
+        let results = search_jobs(
+            &pool,
+            &SearchQuery {
+                text: Some("\"report OR *".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        // No exact literal match for that malformed phrase against any
+        // seeded row — the important assertion is that this didn't error.
+        assert!(results.is_empty());
     }
 }

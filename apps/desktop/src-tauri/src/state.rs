@@ -28,11 +28,33 @@ pub struct AppState {
     /// frontend (Sprint 6 live speed graph).
     pub speed_tracker: Mutex<HashMap<String, (std::time::Instant, u64)>>,
     pub paths: AppPaths,
-    /// Sprint 11: the port the embedded extension API (`sdm-server`'s
-    /// router, mounted in-process — see `lib.rs::spawn_extension_api`) is
-    /// listening on, so Tauri commands can report it back to the
-    /// settings panel's pairing UI.
+    /// Sprint 11: the *configured* port the embedded extension API tries
+    /// to bind first. Kept separate from `extension_api_status` (the
+    /// actual live outcome) because a bind failure may fall back to a
+    /// nearby port — see `lib.rs::spawn_extension_api`.
     pub extension_api_port: u16,
+    /// Live status of the embedded extension API's TCP listener, updated
+    /// by `lib.rs::spawn_extension_api` and read by the `pairing_status`
+    /// command. This is what fixes the "Couldn't reach sdmd at this
+    /// address" bug: the pairing panel used to always report
+    /// `extension_api_port` as if it were listening, even when the bind
+    /// had silently failed (e.g. the port still held in `TIME_WAIT` from
+    /// a just-restarted previous instance). Now it reports what's
+    /// actually true.
+    pub extension_api_status: tokio::sync::watch::Receiver<ExtensionApiStatus>,
+}
+
+/// Outcome of the embedded extension API's attempt to start listening.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtensionApiStatus {
+    /// Still binding/retrying — not an error yet.
+    Starting,
+    /// Actually bound and serving on this port (may differ from the
+    /// configured `extension_api_port` if a fallback port was used).
+    Listening { port: u16 },
+    /// Every retry and fallback port was exhausted; the extension API is
+    /// not reachable at all this session.
+    Failed { error: String },
 }
 
 #[derive(Clone)]

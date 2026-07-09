@@ -142,10 +142,20 @@ export function SettingsPanel({
             />
             {pairing?.connected
               ? "Extension connected"
-              : pairing
+              : pairing?.apiPort
                 ? "No extension connected"
-                : "Checking…"}
+                : pairing?.apiError
+                  ? `Extension API unavailable: ${pairing.apiError}`
+                  : "Checking…"}
           </p>
+          {pairing && !pairing.apiPort && pairing.apiError && (
+            <p className="sdm-muted sdm-error">
+              The embedded extension API couldn't start, so pairing won't work until this is
+              resolved. This usually means another SmartDownloadManager instance (or something else)
+              is already using the port — quitting other instances and reopening Settings will retry
+              automatically.
+            </p>
+          )}
           {pairing && pairing.pairedExtensions.length > 0 && (
             <ul className="sdm-muted">
               {pairing.pairedExtensions.map((ext) => (
@@ -159,15 +169,24 @@ export function SettingsPanel({
             </ul>
           )}
           <div className="sdm-form-row">
-            <button type="button" disabled={busy} onClick={() => void handleGenerateToken()}>
+            <button
+              type="button"
+              disabled={busy || !pairing?.apiPort}
+              onClick={() => void handleGenerateToken()}
+              title={
+                !pairing?.apiPort
+                  ? "Waiting for the extension API to start before a token can be issued"
+                  : undefined
+              }
+            >
               Generate pairing token
             </button>
           </div>
-          {issuedToken && (
+          {issuedToken && pairing?.apiPort && (
             <div className="sdm-pairing-token">
               <p className="sdm-muted">
                 In the extension's Settings page, set the sdmd address to{" "}
-                <code>http://127.0.0.1:{pairing?.apiPort ?? 7890}</code> and paste this token:
+                <code>http://127.0.0.1:{pairing.apiPort}</code> and paste this token:
               </p>
               <code className="sdm-token">{issuedToken.token}</code>
               <div className="sdm-form-row">

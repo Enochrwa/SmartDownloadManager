@@ -199,3 +199,47 @@ pub struct PairingStatusResponse {
 pub struct ErrorResponse {
     pub error: String,
 }
+
+/// Sprint 12 `GET /search` — mirrors `sdm_storage::SearchQuery` field for
+/// field but as a stable wire type (query-string deserializable, since
+/// this is a GET), and `SearchResultResponse` mirrors
+/// `sdm_storage::SearchResultRecord`. Kept separate from the storage
+/// types for the same reason `JobResponse` is separate from `JobRecord`
+/// — storage internals (typed `JobStatus`/`JobKind` enums, `anyhow`
+/// errors) shouldn't leak across the wire.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SearchRequest {
+    pub text: Option<String>,
+    #[serde(default)]
+    pub regex: bool,
+    pub category: Option<String>,
+    pub status: Option<String>,
+    pub date_from: Option<String>,
+    pub date_to: Option<String>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchResultResponse {
+    pub job_id: String,
+    pub url: String,
+    pub filename: String,
+    pub category: Option<String>,
+    pub status: String,
+    pub job_kind: String,
+    pub created_at: String,
+}
+
+impl From<sdm_storage::SearchResultRecord> for SearchResultResponse {
+    fn from(r: sdm_storage::SearchResultRecord) -> Self {
+        SearchResultResponse {
+            job_id: r.job_id,
+            url: r.url,
+            filename: r.filename,
+            category: r.category,
+            status: r.status.as_str().to_string(),
+            job_kind: r.job_kind.as_str().to_string(),
+            created_at: r.created_at,
+        }
+    }
+}

@@ -427,6 +427,21 @@ pub async fn pairing_status(
     let tokens = sdm_storage::list_pairing_tokens(&state.pool)
         .await
         .map_err(|e| e.to_string())?;
+
+    // Report what's actually true, not the configured constant — this is
+    // the Sprint 12 fix for "Couldn't reach sdmd at this address": the
+    // panel used to always show `extension_api_port` as if the embedded
+    // server were listening there, even when the bind had silently
+    // failed. See `lib.rs::spawn_extension_api`.
+    let (api_port, api_error) = match state.extension_api_status.borrow().clone() {
+        crate::state::ExtensionApiStatus::Listening { port } => (Some(port), None),
+        crate::state::ExtensionApiStatus::Starting => (
+            None,
+            Some("still starting up — try again in a moment".to_string()),
+        ),
+        crate::state::ExtensionApiStatus::Failed { error } => (None, Some(error)),
+    };
+
     Ok(crate::dto::PairingStatusDto {
         connected,
         paired_extensions: tokens
@@ -437,7 +452,8 @@ pub async fn pairing_status(
                 last_seen_at: t.last_seen_at,
             })
             .collect(),
-        api_port: state.extension_api_port,
+        api_port,
+        api_error,
     })
 }
 
