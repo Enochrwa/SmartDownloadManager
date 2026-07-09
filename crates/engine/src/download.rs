@@ -69,6 +69,32 @@ impl Engine {
         }
     }
 
+    /// Sprint 12: same as [`Engine::new`], but the shared HTTP client (used
+    /// by every HTTP/WebDAV job this `Engine` runs — see the `self.client`
+    /// call sites throughout this module) is routed through `proxy`.
+    ///
+    /// This covers global proxy configuration cleanly: one client, built
+    /// once, used everywhere this `Engine` instance downloads. Per-job or
+    /// per-category proxy overrides (`docs/SPRINT_PLAN_PHASE2.md` Sprint
+    /// 12 also calls for those) are intentionally *not* wired in here yet
+    /// — that needs a client-per-job (or a small client cache) threaded
+    /// through the segment-stealing allocator's worker spawns in
+    /// `start_download`/`run`, which is a much larger, riskier change to
+    /// the most performance/correctness-sensitive part of this crate than
+    /// this constructor swap. `sdm_storage::jobs.proxy_config` already
+    /// persists a per-job override (see the Sprint 12 storage migration)
+    /// so the data model is ready; enforcing it is the next slice.
+    pub fn new_with_proxy(
+        pool: SqlitePool,
+        proxy: Option<&sdm_protocols::ProxyConfig>,
+    ) -> Result<Self, sdm_protocols::ProtoError> {
+        Ok(Engine {
+            pool,
+            client: sdm_protocols::build_client_with_proxy(proxy)?,
+            torrent_engine: tokio::sync::OnceCell::new(),
+        })
+    }
+
     /// Start (or reuse) the shared `librqbit` session, rooted at
     /// `default_output_folder`. Individual torrent jobs can still override
     /// their output folder per-call.

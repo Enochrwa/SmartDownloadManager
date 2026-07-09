@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 pub use sqlx::SqlitePool;
 
+pub mod credentials;
+pub use credentials::{CredentialError, CredentialStore};
+
 /// Open (creating if needed) the SQLite database at `db_path` and run all
 /// pending migrations.
 pub async fn connect(db_path: &str) -> anyhow::Result<SqlitePool> {
@@ -1607,6 +1610,93 @@ pub async fn set_job_category(
     Ok(())
 }
 
+/// Sprint 12: the global default proxy (used when a job has no
+/// per-job override — see `jobs.proxy_url`/`proxy_credential_ref`).
+/// `credential_ref` is opaque — resolve it via
+/// `CredentialStore::retrieve_opt` to get the actual username/password,
+/// never stored here directly.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxySettings {
+    pub url: String,
+    pub credential_ref: Option<String>,
+}
+
+pub async fn get_global_proxy(pool: &SqlitePool) -> anyhow::Result<Option<ProxySettings>> {
+    let row = sqlx::query("SELECT proxy_url, proxy_credential_ref FROM global_settings WHERE id = 1")
+        .fetch_optional(pool)
+        .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let url: Option<String> = row.try_get("proxy_url")?;
+    let credential_ref: Option<String> = row.try_get("proxy_credential_ref")?;
+    Ok(url.map(|url| ProxySettings {
+        url,
+        credential_ref,
+    }))
+}
+
+/// Set (or clear, with `None`) the global default proxy. Callers are
+/// responsible for having already stored any credential via
+/// `CredentialStore::store` and passing its ref here — this function
+/// never sees a plaintext secret.
+pub async fn set_global_proxy(
+    pool: &SqlitePool,
+    settings: Option<&ProxySettings>,
+) -> anyhow::Result<()> {
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO global_settings (id, proxy_url, proxy_credential_ref, updated_at)
+         VALUES (1, ?1, ?2, ?3)
+         ON CONFLICT(id) DO UPDATE SET
+            proxy_url = excluded.proxy_url,
+            proxy_credential_ref = excluded.proxy_credential_ref,
+            updated_at = excluded.updated_at",
+    )
+    .bind(settings.map(|s| s.url.as_str()))
+    .bind(settings.and_then(|s| s.credential_ref.as_deref()))
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Per-job proxy override — takes precedence over the global default
+/// when set. See `Engine::new_with_proxy`'s doc comment for the current
+/// state of *enforcing* this (persisted now; not yet read by the
+/// segment-download pipeline).
+pub async fn set_job_proxy(
+    pool: &SqlitePool,
+    id: &str,
+    settings: Option<&ProxySettings>,
+) -> anyhow::Result<()> {
+    let now = Utc::now().to_rfc3339();
+    sqlx::query("UPDATE jobs SET proxy_url = ?1, proxy_credential_ref = ?2, updated_at = ?3 WHERE id = ?4")
+        .bind(settings.map(|s| s.url.as_str()))
+        .bind(settings.and_then(|s| s.credential_ref.as_deref()))
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn get_job_proxy(pool: &SqlitePool, id: &str) -> anyhow::Result<Option<ProxySettings>> {
+    let row = sqlx::query("SELECT proxy_url, proxy_credential_ref FROM jobs WHERE id = ?1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let url: Option<String> = row.try_get("proxy_url")?;
+    let credential_ref: Option<String> = row.try_get("proxy_credential_ref")?;
+    Ok(url.map(|url| ProxySettings {
+        url,
+        credential_ref,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2170,6 +2260,47 @@ mod tests {
         assert!(revoked.revoked_at.is_some());
         assert!(list_pairing_tokens(&pool).await.unwrap().is_empty());
         assert!(!has_recent_pairing_activity(&pool, 60).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn global_proxy_settings_round_trip_and_clear() {
+        let pool = connect_in_memory().await.unwrap();
+
+        assert_eq!(get_global_proxy(&pool).await.unwrap(), None);
+
+        let settings = ProxySettings {
+            url: "socks5h://127.0.0.1:1080".to_string(),
+            credential_ref: Some("kc:abc123".to_string()),
+        };
+        set_global_proxy(&pool, Some(&settings)).await.unwrap();
+        assert_eq!(get_global_proxy(&pool).await.unwrap(), Some(settings));
+
+        set_global_proxy(&pool, None).await.unwrap();
+        assert_eq!(get_global_proxy(&pool).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn per_job_proxy_override_round_trips_independently_of_global() {
+        let pool = connect_in_memory().await.unwrap();
+        insert_job(&pool, "job-1", "https://example.com/f", "/tmp/f")
+            .await
+            .unwrap();
+
+        assert_eq!(get_job_proxy(&pool, "job-1").await.unwrap(), None);
+
+        let job_settings = ProxySettings {
+            url: "http://proxy.internal:8080".to_string(),
+            credential_ref: None,
+        };
+        set_job_proxy(&pool, "job-1", Some(&job_settings))
+            .await
+            .unwrap();
+        assert_eq!(
+            get_job_proxy(&pool, "job-1").await.unwrap(),
+            Some(job_settings)
+        );
+        // Global default is unaffected by the per-job override.
+        assert_eq!(get_global_proxy(&pool).await.unwrap(), None);
     }
 
     async fn seed_search_fixture(pool: &SqlitePool) {

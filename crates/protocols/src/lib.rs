@@ -18,5 +18,8 @@ pub mod ssh;
 pub mod webdav;
 
 pub use error::ErrorClass;
-pub use http::{build_client, download_range, download_single, probe, ProbeInfo, ProtoError};
+pub use http::{
+    build_client, build_client_with_proxy, download_range, download_single, probe, ProbeInfo,
+    ProtoError, ProxyConfig,
+};
 pub use ssh::{HostKeyPolicy, SshAuth, SshProtoError, SshSession, SshUrl};
