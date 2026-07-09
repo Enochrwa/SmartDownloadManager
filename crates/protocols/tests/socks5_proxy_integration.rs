@@ -40,7 +40,9 @@ struct Socks5TestServer {
 
 /// `None` means "no auth required"; `Some((user, pass))` means the server
 /// rejects any connection that doesn't present exactly these credentials.
-async fn start_socks5_test_server(required_auth: Option<(&'static str, &'static str)>) -> Socks5TestServer {
+async fn start_socks5_test_server(
+    required_auth: Option<(&'static str, &'static str)>,
+) -> Socks5TestServer {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let log = ProxyLog::default();
@@ -101,7 +103,9 @@ async fn handle_socks5_connection(
         client.read_exact(&mut passwd).await?;
 
         let ok = uname == expected_user.as_bytes() && passwd == expected_pass.as_bytes();
-        client.write_all(&[0x01, if ok { 0x00 } else { 0x01 }]).await?;
+        client
+            .write_all(&[0x01, if ok { 0x00 } else { 0x01 }])
+            .await?;
         if !ok {
             return Ok(());
         }
@@ -120,10 +124,7 @@ async fn handle_socks5_connection(
             let mut port_buf = [0u8; 2];
             client.read_exact(&mut port_buf).await?;
             let port = u16::from_be_bytes(port_buf);
-            format!(
-                "{}.{}.{}.{}:{}",
-                addr[0], addr[1], addr[2], addr[3], port
-            )
+            format!("{}.{}.{}.{}:{}", addr[0], addr[1], addr[2], addr[3], port)
         }
         0x03 => {
             // Domain name

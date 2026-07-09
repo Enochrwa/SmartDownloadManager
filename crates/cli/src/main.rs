@@ -237,7 +237,9 @@ fn encode_proxy_credential(user: &str, pass: &str) -> String {
 }
 
 fn decode_proxy_credential(stored: &str) -> Option<(String, String)> {
-    stored.split_once('\n').map(|(u, p)| (u.to_string(), p.to_string()))
+    stored
+        .split_once('\n')
+        .map(|(u, p)| (u.to_string(), p.to_string()))
 }
 
 /// Sprint 12: build the shared `Engine` used by every CLI command,
@@ -1129,7 +1131,10 @@ async fn main() -> anyhow::Result<()> {
             };
             sdm_storage::set_global_proxy(
                 &pool,
-                Some(&sdm_storage::ProxySettings { url, credential_ref }),
+                Some(&sdm_storage::ProxySettings {
+                    url,
+                    credential_ref,
+                }),
             )
             .await?;
             println!("Global proxy set.");

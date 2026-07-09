@@ -56,8 +56,10 @@ pub async fn search(
 
     match sdm_storage::search_jobs(&state.pool, &query).await {
         Ok(results) => {
-            let out: Vec<SearchResultResponse> =
-                results.into_iter().map(SearchResultResponse::from).collect();
+            let out: Vec<SearchResultResponse> = results
+                .into_iter()
+                .map(SearchResultResponse::from)
+                .collect();
             Json(out).into_response()
         }
         // An invalid regex is a client error (bad input), not a server

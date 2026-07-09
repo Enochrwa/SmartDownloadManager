@@ -1622,9 +1622,10 @@ pub struct ProxySettings {
 }
 
 pub async fn get_global_proxy(pool: &SqlitePool) -> anyhow::Result<Option<ProxySettings>> {
-    let row = sqlx::query("SELECT proxy_url, proxy_credential_ref FROM global_settings WHERE id = 1")
-        .fetch_optional(pool)
-        .await?;
+    let row =
+        sqlx::query("SELECT proxy_url, proxy_credential_ref FROM global_settings WHERE id = 1")
+            .fetch_optional(pool)
+            .await?;
     let Some(row) = row else {
         return Ok(None);
     };
@@ -1671,13 +1672,15 @@ pub async fn set_job_proxy(
     settings: Option<&ProxySettings>,
 ) -> anyhow::Result<()> {
     let now = Utc::now().to_rfc3339();
-    sqlx::query("UPDATE jobs SET proxy_url = ?1, proxy_credential_ref = ?2, updated_at = ?3 WHERE id = ?4")
-        .bind(settings.map(|s| s.url.as_str()))
-        .bind(settings.and_then(|s| s.credential_ref.as_deref()))
-        .bind(&now)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "UPDATE jobs SET proxy_url = ?1, proxy_credential_ref = ?2, updated_at = ?3 WHERE id = ?4",
+    )
+    .bind(settings.map(|s| s.url.as_str()))
+    .bind(settings.and_then(|s| s.credential_ref.as_deref()))
+    .bind(&now)
+    .bind(id)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

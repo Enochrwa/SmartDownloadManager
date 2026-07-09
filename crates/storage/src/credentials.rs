@@ -109,8 +109,9 @@ impl CredentialStore {
             let ciphertext: Vec<u8> = row
                 .try_get("ciphertext")
                 .map_err(|e| CredentialError::Storage(e))?;
-            let nonce_bytes: Vec<u8> =
-                row.try_get("nonce").map_err(|e| CredentialError::Storage(e))?;
+            let nonce_bytes: Vec<u8> = row
+                .try_get("nonce")
+                .map_err(|e| CredentialError::Storage(e))?;
 
             let key = self.get_or_create_fallback_key().await?;
             let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
@@ -261,9 +262,7 @@ mod tests {
 
         let raw = std::fs::read(&db_path).unwrap();
         let needle = secret.as_bytes();
-        let found = raw
-            .windows(needle.len())
-            .any(|window| window == needle);
+        let found = raw.windows(needle.len()).any(|window| window == needle);
         assert!(
             !found,
             "plaintext secret was found in the raw SQLite file bytes -- \

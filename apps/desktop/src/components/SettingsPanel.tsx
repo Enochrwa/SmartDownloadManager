@@ -151,9 +151,9 @@ export function SettingsPanel({
           {pairing && !pairing.apiPort && pairing.apiError && (
             <p className="sdm-muted sdm-error">
               The embedded extension API couldn't start, so pairing won't work until this is
-              resolved. This usually means another SmartDownloadManager instance (or something
-              else) is already using the port — quitting other instances and reopening Settings
-              will retry automatically.
+              resolved. This usually means another SmartDownloadManager instance (or something else)
+              is already using the port — quitting other instances and reopening Settings will retry
+              automatically.
             </p>
           )}
           {pairing && pairing.pairedExtensions.length > 0 && (

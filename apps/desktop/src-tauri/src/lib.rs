@@ -221,10 +221,8 @@ fn spawn_extension_api(
                         "extension API bind failed, retrying: {e}"
                     );
                     last_err = Some(e);
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        200 * 2u64.pow(attempt),
-                    ))
-                    .await;
+                    tokio::time::sleep(std::time::Duration::from_millis(200 * 2u64.pow(attempt)))
+                        .await;
                 }
             }
         }
