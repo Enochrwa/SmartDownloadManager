@@ -109,9 +109,7 @@ impl CredentialStore {
             let ciphertext: Vec<u8> = row
                 .try_get("ciphertext")
                 .map_err(CredentialError::Storage)?;
-            let nonce_bytes: Vec<u8> = row
-                .try_get("nonce")
-                .map_err(CredentialError::Storage)?;
+            let nonce_bytes: Vec<u8> = row.try_get("nonce").map_err(CredentialError::Storage)?;
 
             let key = self.get_or_create_fallback_key().await?;
             let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
