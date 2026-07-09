@@ -21,3 +21,6 @@ thiserror.workspace = true
 [lib]
 name = "sdm_storage"
 path = "src/lib.rs"
+
+[dev-dependencies]
+tempfile.workspace = true
