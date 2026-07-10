@@ -55,7 +55,17 @@ impl Respond for RangeResponder {
 
         if let (Some(threshold), Some((start, _))) = (self.slow_below, parse_range(req)) {
             if start < threshold {
-                return base.set_delay(Duration::from_millis(250));
+                // 250ms was cutting it close on slower/loaded CI runners
+                // (observed failing on Windows GitHub Actions runners,
+                // where loopback socket overhead is noticeably higher
+                // than on Linux): the other three (undelayed) 1MB
+                // segments need to reliably finish well within this
+                // window for anything to be left to steal from this one.
+                // A generous margin here is cheap (this only adds to the
+                // one, already-slow, segment's total time) and removes
+                // the flakiness rather than just hoping the CI runner is
+                // fast enough on any given run.
+                return base.set_delay(Duration::from_millis(800));
             }
         }
         base
