@@ -379,15 +379,18 @@ mod tests {
         // Sprint 12 DoD (adapted from the proxy-credential case): the
         // access/refresh token strings must never appear anywhere in the
         // raw auth_configs/oauth_tokens/encrypted_credentials tables —
-        // only inside the (encrypted) ciphertext blob.
+        // only inside the (encrypted) ciphertext blob, if the fallback
+        // encrypted-DB backend was used at all. Like
+        // `credentials::tests::secret_is_never_written_to_the_sqlite_file_in_plaintext`,
+        // this can't assume which backend `CredentialStore::store` chose:
+        // on a machine/CI runner with a reachable OS keychain (Secret
+        // Service on Linux, Keychain on macOS, Credential Manager on
+        // Windows), it stores via `kc:` and `encrypted_credentials` is
+        // legitimately empty — that's the *better* outcome, not a bug.
         let rows = sqlx::query("SELECT ref_id, ciphertext FROM encrypted_credentials")
             .fetch_all(&pool)
             .await
             .unwrap();
-        assert!(
-            !rows.is_empty(),
-            "expected a fallback-encrypted credential row"
-        );
         for row in rows {
             let ciphertext: Vec<u8> = row.try_get("ciphertext").unwrap();
             let as_text = String::from_utf8_lossy(&ciphertext);
