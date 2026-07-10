@@ -75,6 +75,7 @@ pub fn build_router(
         .route("/capture", post(routes::capture::capture))
         .route("/capture/batch", post(routes::capture::capture_batch))
         .route("/search", get(routes::search::search))
+        .route("/auth/cookies", post(routes::auth::import_cookies))
         .route("/ws/progress", get(routes::ws::ws_progress))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -112,6 +113,14 @@ pub async fn router_from_env() -> anyhow::Result<Router> {
     let engine = Arc::new(sdm_engine::Engine::new(pool.clone()));
     let default_download_dir = download_dir_fallback(&home);
     tokio::fs::create_dir_all(&default_download_dir).await.ok();
+
+    // Sprint 12: `sdmd` (unlike the in-process `sdm` CLI, which has no
+    // long enough lifetime for interface-polling to be useful) runs the
+    // VPN-detection monitor for as long as the daemon is up — see
+    // `sdm_engine::vpn` for what "detection" means here and why it only
+    // ever pauses, never auto-resumes.
+    tokio::spawn(sdm_engine::VpnMonitor::new(pool.clone()).run());
+
     Ok(build_router(pool, engine, default_download_dir))
 }
 

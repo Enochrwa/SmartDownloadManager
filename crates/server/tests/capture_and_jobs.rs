@@ -465,3 +465,110 @@ async fn pause_then_resume_and_cancel_job_lifecycle() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
+
+/// Same construction as `test_router`, but also hands back the pool so a
+/// test can verify a route's storage side-effects directly (via
+/// `sdm_storage`) rather than only through another HTTP round trip.
+async fn test_router_with_pool() -> (Router, sdm_storage::SqlitePool, tempfile::TempDir) {
+    let pool = sdm_storage::connect_in_memory().await.unwrap();
+    let engine = Arc::new(sdm_engine::Engine::new(pool.clone()));
+    let dir = tempfile::tempdir().unwrap();
+    let router = sdm_server::build_router(pool.clone(), engine, dir.path().to_path_buf());
+    (router, pool, dir)
+}
+
+/// Sprint 12: `POST /auth/cookies` is behind the same bearer pairing-token
+/// gate as every other `protected` route (rejecting missing/unknown
+/// tokens is already covered generically by
+/// `jobs_endpoint_rejects_missing_and_unknown_tokens` above for `/jobs`;
+/// this proves the gate applies to this route specifically too), and a
+/// successful import is actually retrievable afterwards via
+/// `sdm_storage::auth::resolve_auth_config` — the same path
+/// `sdm download`/the engine would use to pick it up.
+#[tokio::test]
+async fn auth_cookie_import_requires_token_and_is_retrievable_after_import() {
+    let (router, pool, _dir) = test_router_with_pool().await;
+
+    // No token: rejected, same as every other protected route.
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/auth/cookies",
+            None,
+            serde_json::json!({"domain": "example.com", "cookie": "session=abc123"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    let token = issue_token(&router).await;
+
+    // Empty domain/cookie: rejected as a client error, not silently
+    // accepted as an empty auth config.
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/auth/cookies",
+            Some(&token),
+            serde_json::json!({"domain": "", "cookie": "session=abc123"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // A real import succeeds...
+    let resp = router
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/auth/cookies",
+            Some(&token),
+            serde_json::json!({"domain": "example.com", "cookie": "session=abc123; csrftoken=xyz"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // ...and is actually retrievable, via the exact same
+    // `resolve_auth_config` path `sdm download` uses to pick up a saved
+    // domain auth config for a URL on that domain.
+    let store = sdm_storage::CredentialStore::new(pool.clone());
+    let resolved = sdm_storage::auth::resolve_auth_config(
+        &pool,
+        &store,
+        None,
+        "https://example.com/some/file.zip",
+    )
+    .await
+    .unwrap()
+    .expect("cookie import should be resolvable for the imported domain");
+    assert_eq!(
+        resolved.cookie.as_deref(),
+        Some("session=abc123; csrftoken=xyz")
+    );
+
+    // Importing again for the same domain replaces (not duplicates) the
+    // stored cookie.
+    let resp = router
+        .oneshot(json_request(
+            "POST",
+            "/auth/cookies",
+            Some(&token),
+            serde_json::json!({"domain": "example.com", "cookie": "session=updated456"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let resolved = sdm_storage::auth::resolve_auth_config(
+        &pool,
+        &store,
+        None,
+        "https://example.com/some/other-file.zip",
+    )
+    .await
+    .unwrap()
+    .expect("updated cookie should still be resolvable");
+    assert_eq!(resolved.cookie.as_deref(), Some("session=updated456"));
+}

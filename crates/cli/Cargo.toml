@@ -22,3 +22,7 @@ sdm-storage = { path = "../storage" }
 sdm-api-types = { path = "../api-types" }
 sdm-torrent = { path = "../torrent" }
 sdm-media = { path = "../media" }
+url.workspace = true
+chrono.workspace = true
+# Sprint 12: OAuth2 authorization-code flow with PKCE for `sdm oauth-login`.
+oauth2.workspace = true

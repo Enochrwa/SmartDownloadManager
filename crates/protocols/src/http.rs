@@ -8,7 +8,6 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use futures_util::StreamExt;
 use reqwest::header::{ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, ETAG, LAST_MODIFIED, RANGE};
@@ -55,7 +54,7 @@ impl ProxyConfig {
         self
     }
 
-    fn to_reqwest_proxy(&self) -> Result<reqwest::Proxy, ProtoError> {
+    pub(crate) fn to_reqwest_proxy(&self) -> Result<reqwest::Proxy, ProtoError> {
         let mut proxy = reqwest::Proxy::all(self.url.as_str()).map_err(ProtoError::InvalidProxy)?;
         if let (Some(user), Some(pass)) = (&self.username, &self.password) {
             proxy = proxy.basic_auth(user, pass);
@@ -80,6 +79,17 @@ pub enum ProtoError {
     /// failed".
     #[error("invalid proxy configuration: {0}")]
     InvalidProxy(#[source] reqwest::Error),
+    /// Sprint 12: a custom auth header (bearer token, API key, cookie
+    /// paste) failed basic HTTP-header validation — e.g. a header name
+    /// with whitespace, or a value containing a bare CR/LF (header
+    /// injection). Surfaced distinctly so the CLI/REST layer can say
+    /// "that header/value isn't valid" instead of a generic failure.
+    #[error("invalid header {name}: {reason}")]
+    InvalidHeader { name: String, reason: String },
+    /// Sprint 12: the URL a pasted/imported cookie should be scoped to
+    /// wasn't a valid URL.
+    #[error("invalid cookie URL: {0}")]
+    InvalidCookieUrl(#[source] url::ParseError),
 }
 
 impl ProtoError {
@@ -89,34 +99,36 @@ impl ProtoError {
             ProtoError::Http { class, .. } => class.clone(),
             ProtoError::Io(_) => ErrorClass::Other,
             ProtoError::InvalidProxy(_) => ErrorClass::Other,
+            ProtoError::InvalidHeader { .. } => ErrorClass::Other,
+            ProtoError::InvalidCookieUrl(_) => ErrorClass::Other,
         }
     }
 }
 
 /// Build the shared reqwest client. TLS 1.2/1.3 via rustls (no native-tls /
-/// OpenSSL dependency — see docs/TECH_DECISIONS.md).
+/// OpenSSL dependency — see docs/TECH_DECISIONS.md). Delegates to
+/// [`crate::net_config::build_client_with_config`] with an all-default
+/// [`crate::net_config::ClientConfig`] — kept as its own function since
+/// it can never fail (no proxy/header/cookie input to validate), unlike
+/// the `_with_*` variants below.
 pub fn build_client() -> Client {
-    Client::builder()
-        .use_rustls_tls()
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(60 * 30))
-        .build()
-        .expect("reqwest client config is valid")
+    crate::net_config::build_client_with_config(&crate::net_config::ClientConfig::default())
+        .expect("default ClientConfig can never fail to build")
 }
 
 /// Sprint 12: same as [`build_client`], but routed through `proxy` when
 /// given. `None` is identical to `build_client()` (explicit `Option`
 /// rather than an empty-string sentinel, so "no proxy" can't be
-/// confused with a misconfigured one).
+/// confused with a misconfigured one). Thin wrapper around
+/// [`crate::net_config::build_client_with_config`] for callers that only
+/// need the proxy knob — see that module for DNS mode / auth headers /
+/// cookies.
 pub fn build_client_with_proxy(proxy: Option<&ProxyConfig>) -> Result<Client, ProtoError> {
-    let mut builder = Client::builder()
-        .use_rustls_tls()
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(60 * 30));
-    if let Some(cfg) = proxy {
-        builder = builder.proxy(cfg.to_reqwest_proxy()?);
-    }
-    builder.build().map_err(ProtoError::InvalidProxy)
+    let cfg = crate::net_config::ClientConfig {
+        proxy: proxy.cloned(),
+        ..Default::default()
+    };
+    crate::net_config::build_client_with_config(&cfg)
 }
 
 #[derive(Debug, Clone, Default)]

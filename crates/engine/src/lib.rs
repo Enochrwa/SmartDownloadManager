@@ -35,6 +35,7 @@ pub mod segment;
 pub mod ssh;
 pub mod torrent;
 pub mod verify;
+pub mod vpn;
 pub mod webdav;
 
 pub use chunking::{find_corrupt_chunks, repair_chunk, CorruptChunk};
@@ -54,4 +55,5 @@ pub use segment::ConnectionsOption;
 pub use ssh::{ScpDownloadRequest, SftpDownloadRequest, SshConnectionOptions, SshEngine};
 pub use torrent::TorrentDownloadRequest;
 pub use verify::{verify_file, ChecksumAlgorithm, ExpectedChecksum};
+pub use vpn::{VpnEvent, VpnMonitor};
 pub use webdav::{WebDavDownloadRequest, WebDavEngine};

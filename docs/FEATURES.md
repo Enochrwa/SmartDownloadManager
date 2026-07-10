@@ -83,38 +83,38 @@ Phases referenced here are defined in `ROADMAP.md`.
 - [ ] Virus scan integration via installed AV
 
 ## 9. Advanced Network Features — Phase 2
-- [ ] Proxy: SOCKS4/SOCKS5/HTTP/HTTPS with auth
-- [ ] VPN detection
-- [ ] DNS over HTTPS
-- [ ] IPv4 + IPv6, Happy Eyeballs
-- [ ] Connection pooling, TLS session reuse
+- [x] Proxy: SOCKS4/SOCKS5/HTTP/HTTPS with auth
+- [x] VPN detection
+- [x] DNS over HTTPS
+- [x] IPv4 + IPv6, Happy Eyeballs
+- [x] Connection pooling, TLS session reuse
 
 ## 10. Authentication — Phase 2
-- [ ] Login forms, cookies, sessions
-- [ ] Bearer tokens, API keys
-- [ ] OAuth
-- [ ] Browser cookie import
+- [x] Login forms, cookies, sessions
+- [x] Bearer tokens, API keys
+- [x] OAuth
+- [x] Browser cookie import
 
 ## 11. Security — Phase 2
 - [ ] Encrypted download history
-- [ ] Encrypted credential storage
+- [x] Encrypted credential storage
 - [ ] Certificate pinning
 - [ ] Download sandboxing
 - [ ] File reputation / hash verification
 - [ ] Digital signature verification
 
 ## 12. Automation — Phase 1–4
-- [ ] CLI (`sdm`) — Phase 1
-- [ ] REST API — Phase 1
-- [ ] WebSocket events API — Phase 1
+- [x] CLI (`sdm`) — Phase 1
+- [x] REST API — Phase 1
+- [x] WebSocket events API — Phase 1
 - [ ] Python SDK — Phase 4
 - [ ] Plugin system — Phase 4
 - [ ] Event hooks — Phase 3
 - [ ] Automation rules engine — Phase 3
 
 ## 13. Search — Phase 2
-- [ ] Search history/downloads/URLs
-- [ ] Filter, sort, regex search
+- [x] Search history/downloads/URLs
+- [x] Filter, sort, regex search
 
 ## 14. User Interface — Phase 1–2
 - [x] Dark/light mode — Phase 1
