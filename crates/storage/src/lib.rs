@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 pub use sqlx::SqlitePool;
 
+pub mod auth;
 pub mod credentials;
 pub use credentials::{CredentialError, CredentialStore};
 

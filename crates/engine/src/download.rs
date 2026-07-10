@@ -95,6 +95,31 @@ impl Engine {
         })
     }
 
+    /// Sprint 12: same idea as [`Engine::new_with_proxy`], but taking a
+    /// full [`sdm_protocols::ClientConfig`] — proxy, DNS mode (plain vs.
+    /// DoH), and the new authentication pieces (custom headers for
+    /// bearer-token/API-key auth, and a `Cookie` header for
+    /// session-cookie auth). Same "one shared client, built once" model,
+    /// and the same scoping note as `new_with_proxy` applies: headers/
+    /// cookies configured here apply to every HTTP/WebDAV request this
+    /// `Engine` instance makes, so a caller building a client with
+    /// domain- or job-scoped auth (via
+    /// `sdm_storage::auth::resolve_auth_config`) should construct one
+    /// `Engine` per such job/domain rather than share it — which is
+    /// exactly what the CLI's `download` command does (see
+    /// `crates/cli/src/main.rs`), and is the practical, real-download-
+    /// tested path for authenticated single downloads today.
+    pub fn new_with_config(
+        pool: SqlitePool,
+        config: &sdm_protocols::ClientConfig,
+    ) -> Result<Self, sdm_protocols::ProtoError> {
+        Ok(Engine {
+            pool,
+            client: sdm_protocols::build_client_with_config(config)?,
+            torrent_engine: tokio::sync::OnceCell::new(),
+        })
+    }
+
     /// Start (or reuse) the shared `librqbit` session, rooted at
     /// `default_output_folder`. Individual torrent jobs can still override
     /// their output folder per-call.

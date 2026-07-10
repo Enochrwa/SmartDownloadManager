@@ -126,6 +126,35 @@ enum Commands {
         /// never written anywhere in plaintext.
         #[arg(long = "proxy-pass")]
         proxy_pass: Option<String>,
+        /// Sprint 12: a custom request header, "Name: Value". Repeatable.
+        /// Used for API-key auth (e.g. `--header "X-API-Key: abc123"`) or
+        /// anything else a site's auth needs beyond a bearer token/cookie.
+        #[arg(long = "header")]
+        headers: Vec<String>,
+        /// Sprint 12: shorthand for `--header "Authorization: Bearer <token>"`.
+        #[arg(long)]
+        bearer: Option<String>,
+        /// Sprint 12: raw `Cookie:` header value for session-cookie auth,
+        /// e.g. `--cookie "sessionid=abc123; csrftoken=xyz"` — paste this
+        /// from your browser's dev tools (Application/Storage tab), or use
+        /// the Sprint 11 browser extension's cookie-import endpoint
+        /// instead of copying it by hand.
+        #[arg(long)]
+        cookie: Option<String>,
+        /// Sprint 12: resolve DNS for this download over HTTPS (DoH)
+        /// instead of the system resolver. One of "cloudflare", "google",
+        /// or "quad9". Falls back to plain DNS automatically if the DoH
+        /// endpoint itself is unreachable.
+        #[arg(long = "doh", value_name = "PROVIDER")]
+        doh: Option<String>,
+        /// Sprint 12: persist the `--header`/`--bearer`/`--cookie` given
+        /// here as this download's domain's auth config, so future
+        /// downloads from the same domain (with `sdm download`, no flags
+        /// needed) pick it up automatically via
+        /// `sdm_storage::auth::resolve_auth_config`. Stored encrypted —
+        /// see `sdm_storage::auth`.
+        #[arg(long = "save-auth")]
+        save_auth: bool,
     },
     /// Resume a previously started job by ID.
     Resume {
@@ -223,6 +252,81 @@ enum Commands {
     /// Sprint 12: show the currently configured global default proxy
     /// (URL only — the credential itself is never printed).
     ShowProxy,
+    /// Sprint 12: save a custom header (bearer token, API key, ...) for a
+    /// domain or a specific job, applied automatically to future
+    /// downloads/resumes that match. A job-scoped header overrides a
+    /// domain-scoped one for that job.
+    SetAuthHeader {
+        /// Domain (e.g. "example.com") or, with `--job`, a job ID.
+        scope: String,
+        /// Header name, e.g. "Authorization" or "X-API-Key".
+        name: String,
+        value: String,
+        /// Treat `scope` as a job ID instead of a domain.
+        #[arg(long)]
+        job: bool,
+    },
+    /// Sprint 12: save a raw `Cookie:` header value for a domain or job —
+    /// same scoping rules as `set-auth-header`. Paste the value from your
+    /// browser's dev tools, or (once paired — see `sdm pair`) let the
+    /// browser extension import it via `POST /auth/cookies`.
+    SetAuthCookie {
+        scope: String,
+        cookie: String,
+        #[arg(long)]
+        job: bool,
+    },
+    /// Sprint 12: show whether an auth config exists for a domain/job
+    /// (never prints the header values/cookie themselves).
+    ShowAuth {
+        scope: String,
+        #[arg(long)]
+        job: bool,
+    },
+    /// Sprint 12: delete a saved auth config (and its encrypted
+    /// credential) for a domain/job.
+    ClearAuth {
+        scope: String,
+        #[arg(long)]
+        job: bool,
+    },
+    /// Sprint 12: run the OAuth2 authorization-code flow (with PKCE) for
+    /// `domain` and store the resulting access/refresh tokens, encrypted.
+    /// Opens a local server on 127.0.0.1 to receive the provider's
+    /// redirect — visit the printed URL in a browser to complete login.
+    OauthLogin {
+        /// Domain the resulting token should be applied to (matches the
+        /// same domain-scoping `set-auth-header`/`set-auth-cookie` use).
+        domain: String,
+        #[arg(long = "auth-url")]
+        auth_url: String,
+        #[arg(long = "token-url")]
+        token_url: String,
+        #[arg(long = "client-id")]
+        client_id: String,
+        #[arg(long = "client-secret")]
+        client_secret: Option<String>,
+        /// Space- or comma-separated OAuth scopes to request.
+        #[arg(long)]
+        scope: Option<String>,
+        /// Local port to receive the redirect on. A free port is chosen
+        /// automatically if omitted.
+        #[arg(long = "redirect-port")]
+        redirect_port: Option<u16>,
+    },
+    /// Sprint 12: show the VPN-detection heuristic's current view of
+    /// which network interfaces look VPN-like right now.
+    VpnStatus,
+    /// Sprint 12: run the VPN-detection monitor in the foreground,
+    /// pausing active downloads if a VPN interface appears mid-session.
+    /// Runs until interrupted (Ctrl-C). `sdmd` (the daemon) runs this
+    /// automatically in the background — this is for standalone `sdm`
+    /// use without the daemon.
+    VpnWatch {
+        /// Poll interval in seconds.
+        #[arg(long, default_value_t = 5)]
+        interval: u64,
+    },
 }
 
 /// Encodes a username/password pair as the single string
@@ -242,16 +346,18 @@ fn decode_proxy_credential(stored: &str) -> Option<(String, String)> {
         .map(|(u, p)| (u.to_string(), p.to_string()))
 }
 
-/// Sprint 12: build the shared `Engine` used by every CLI command,
-/// honoring the persisted global default proxy (`sdm set-proxy`) if one
-/// is configured. Per-download `--proxy` (see the `Commands::Download`
-/// arm) overrides this on a per-invocation basis by constructing its own
-/// `Engine::new_with_proxy` locally instead of using this one.
-async fn build_engine_with_global_proxy(pool: &sdm_storage::SqlitePool) -> anyhow::Result<Engine> {
+/// Sprint 12: resolve the persisted global default proxy (`sdm set-proxy`),
+/// if any, into a ready-to-use `ProxyConfig` (credential decrypted).
+/// Factored out of `build_engine_with_global_proxy` so the `Download`
+/// command can compose it with per-download auth headers/cookies/DNS mode
+/// into one `ClientConfig` instead of only being able to use it in
+/// isolation.
+async fn resolve_global_proxy(
+    pool: &sdm_storage::SqlitePool,
+) -> anyhow::Result<Option<sdm_protocols::ProxyConfig>> {
     let Some(settings) = sdm_storage::get_global_proxy(pool).await? else {
-        return Ok(Engine::new(pool.clone()));
+        return Ok(None);
     };
-
     let mut cfg = sdm_protocols::ProxyConfig::new(settings.url);
     if let Some(credential_ref) = &settings.credential_ref {
         let store = sdm_storage::CredentialStore::new(pool.clone());
@@ -260,7 +366,19 @@ async fn build_engine_with_global_proxy(pool: &sdm_storage::SqlitePool) -> anyho
             cfg = cfg.with_auth(user, pass);
         }
     }
-    Ok(Engine::new_with_proxy(pool.clone(), Some(&cfg))?)
+    Ok(Some(cfg))
+}
+
+/// Sprint 12: build the shared `Engine` used by every CLI command,
+/// honoring the persisted global default proxy (`sdm set-proxy`) if one
+/// is configured. Per-download `--proxy` (see the `Commands::Download`
+/// arm) overrides this on a per-invocation basis by constructing its own
+/// `Engine::new_with_config` locally instead of using this one.
+async fn build_engine_with_global_proxy(pool: &sdm_storage::SqlitePool) -> anyhow::Result<Engine> {
+    match resolve_global_proxy(pool).await? {
+        Some(cfg) => Ok(Engine::new_with_proxy(pool.clone(), Some(&cfg))?),
+        None => Ok(Engine::new(pool.clone())),
+    }
 }
 
 fn sdm_home() -> PathBuf {
@@ -362,7 +480,108 @@ fn ssh_connection_options(
     })
 }
 
-/// Parse a `--only-files` value like `"0,2,5"` into file indices.
+/// Parse a `--header "Name: Value"` flag into its `(name, value)` parts.
+fn parse_header_flag(spec: &str) -> anyhow::Result<(String, String)> {
+    let (name, value) = spec
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("invalid --header {spec:?}, expected \"Name: Value\""))?;
+    Ok((name.trim().to_string(), value.trim().to_string()))
+}
+
+/// Build the `AuthScope` a `set-auth-*`/`show-auth`/`clear-auth` CLI
+/// invocation targets, given its `scope` positional and `--job` flag.
+fn auth_scope_from(scope: String, job: bool) -> sdm_storage::auth::AuthScope {
+    if job {
+        sdm_storage::auth::AuthScope::Job(scope)
+    } else {
+        sdm_storage::auth::AuthScope::Domain(scope)
+    }
+}
+
+/// Parse a `sdm download --doh <provider>` value into a `DnsMode`.
+fn parse_doh_flag(provider: &str) -> anyhow::Result<sdm_protocols::DnsMode> {
+    sdm_protocols::DohProvider::parse(provider)
+        .map(sdm_protocols::DnsMode::Doh)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown --doh provider {provider:?}, expected cloudflare, google, or quad9"
+            )
+        })
+}
+
+/// Sprint 12: compose the [`sdm_protocols::ClientConfig`] a `sdm
+/// download` invocation should use, from (in priority order, highest
+/// first): explicit `--proxy`/`--header`/`--bearer`/`--cookie`/`--doh`
+/// flags; the persisted global default proxy (`sdm set-proxy`); and the
+/// persisted per-domain auth config (`sdm set-auth-header`/
+/// `set-auth-cookie`) for `url`'s host, used only when *no* explicit
+/// `--header`/`--bearer`/`--cookie` was given on this invocation (an
+/// explicit flag always fully replaces the persisted config rather than
+/// merging with it, so a one-off `--header` override can't accidentally
+/// pick up a stale saved cookie too).
+#[allow(clippy::too_many_arguments)]
+async fn resolve_download_client_config(
+    pool: &sdm_storage::SqlitePool,
+    url: &str,
+    proxy: Option<&str>,
+    proxy_user: Option<&str>,
+    proxy_pass: Option<&str>,
+    headers: &[String],
+    bearer: Option<&str>,
+    cookie: Option<&str>,
+    doh: Option<&str>,
+) -> anyhow::Result<sdm_protocols::ClientConfig> {
+    let mut cfg = sdm_protocols::ClientConfig {
+        proxy: match proxy {
+            Some(url) => {
+                let mut p = sdm_protocols::ProxyConfig::new(url.to_string());
+                if let (Some(u), Some(pw)) = (proxy_user, proxy_pass) {
+                    p = p.with_auth(u.to_string(), pw.to_string());
+                }
+                Some(p)
+            }
+            None => resolve_global_proxy(pool).await?,
+        },
+        ..Default::default()
+    };
+
+    if let Some(provider) = doh {
+        cfg.dns = parse_doh_flag(provider)?;
+    }
+
+    let explicit_headers = !headers.is_empty() || bearer.is_some();
+    if explicit_headers {
+        for h in headers {
+            let (name, value) = parse_header_flag(h)?;
+            cfg.extra_headers
+                .push(sdm_protocols::AuthHeader::new(name, value));
+        }
+        if let Some(token) = bearer {
+            cfg.extra_headers
+                .push(sdm_protocols::AuthHeader::bearer(token.to_string()));
+        }
+    }
+    if let Some(raw_cookie) = cookie {
+        cfg = cfg.with_cookie(raw_cookie.to_string(), url)?;
+    }
+
+    if !explicit_headers && cookie.is_none() {
+        let store = sdm_storage::CredentialStore::new(pool.clone());
+        if let Some(saved) = sdm_storage::auth::resolve_auth_config(pool, &store, None, url).await?
+        {
+            for (name, value) in saved.headers {
+                cfg.extra_headers
+                    .push(sdm_protocols::AuthHeader::new(name, value));
+            }
+            if let Some(saved_cookie) = saved.cookie {
+                cfg = cfg.with_cookie(saved_cookie, url)?;
+            }
+        }
+    }
+
+    Ok(cfg)
+}
+
 fn parse_file_indices(spec: &str) -> anyhow::Result<Vec<usize>> {
     spec.split(',')
         .map(|s| s.trim())
@@ -412,23 +631,70 @@ async fn main() -> anyhow::Result<()> {
             proxy,
             proxy_user,
             proxy_pass,
+            headers,
+            bearer,
+            cookie,
+            doh,
+            save_auth,
         } => {
-            // Sprint 12: --proxy applies to every transport in this arm
-            // that shares Engine's single reqwest client (HTTP, WebDAV,
-            // DASH, HLS, Metalink — see crates/engine/src/download.rs's
-            // `self.client` call sites). FTP (suppaftp) and BitTorrent
-            // (librqbit) use their own transports and don't go through
-            // this client yet — not proxied by this flag in this
-            // release; see Engine::new_with_proxy's doc comment.
-            let engine = match &proxy {
-                Some(url) => {
-                    let mut cfg = sdm_protocols::ProxyConfig::new(url.clone());
-                    if let (Some(u), Some(p)) = (&proxy_user, &proxy_pass) {
-                        cfg = cfg.with_auth(u.clone(), p.clone());
-                    }
-                    sdm_engine::Engine::new_with_proxy(pool.clone(), Some(&cfg))?
+            // Sprint 12: --proxy/--header/--bearer/--cookie/--doh apply to
+            // every transport in this arm that shares Engine's single
+            // reqwest client (HTTP, WebDAV, DASH, HLS, Metalink — see
+            // crates/engine/src/download.rs's `self.client` call sites).
+            // FTP (suppaftp) and BitTorrent (librqbit) use their own
+            // transports and don't go through this client yet — not
+            // covered by these flags in this release; see
+            // `Engine::new_with_config`'s doc comment.
+            let client_cfg = resolve_download_client_config(
+                &pool,
+                &url,
+                proxy.as_deref(),
+                proxy_user.as_deref(),
+                proxy_pass.as_deref(),
+                &headers,
+                bearer.as_deref(),
+                cookie.as_deref(),
+                doh.as_deref(),
+            )
+            .await?;
+
+            if save_auth && (!headers.is_empty() || bearer.is_some() || cookie.is_some()) {
+                let store = sdm_storage::CredentialStore::new(pool.clone());
+                let mut saved = sdm_storage::auth::AuthConfig::default();
+                for h in &headers {
+                    saved.headers.push(parse_header_flag(h)?);
                 }
-                None => engine,
+                if let Some(token) = &bearer {
+                    saved
+                        .headers
+                        .push(("Authorization".to_string(), format!("Bearer {token}")));
+                }
+                saved.cookie = cookie.clone();
+                if let Some(host) = url::Url::parse(&url)
+                    .ok()
+                    .and_then(|u| u.host_str().map(str::to_string))
+                {
+                    sdm_storage::auth::set_auth_config(
+                        &pool,
+                        &store,
+                        &sdm_storage::auth::AuthScope::Domain(host.clone()),
+                        &saved,
+                    )
+                    .await?;
+                    println!("Saved auth config for domain {host}");
+                } else {
+                    eprintln!("--save-auth: could not parse a domain out of {url:?}, not saved");
+                }
+            }
+
+            let is_default_client_cfg = client_cfg.proxy.is_none()
+                && matches!(client_cfg.dns, sdm_protocols::DnsMode::Plain)
+                && client_cfg.extra_headers.is_empty()
+                && client_cfg.cookie_header.is_none();
+            let engine = if is_default_client_cfg {
+                engine
+            } else {
+                sdm_engine::Engine::new_with_config(pool.clone(), &client_cfg)?
             };
 
             if via_ytdlp || looks_like_ytdlp_site(&url) {
@@ -785,6 +1051,51 @@ async fn main() -> anyhow::Result<()> {
                 .await?
                 .map(|j| j.job_kind)
                 .unwrap_or(sdm_storage::JobKind::Http);
+
+            // Sprint 12: a resumed HTTP/WebDAV job whose domain has a
+            // saved auth config (`sdm set-auth-header`/`set-auth-cookie`,
+            // or one saved via `--save-auth` on the original `download`)
+            // needs that auth applied again — SSH-style flags are
+            // re-prompted on resume (see this match's other arms)
+            // because SSH credentials aren't persisted at all, but HTTP
+            // auth *is* persisted, so it's resolved automatically here
+            // rather than requiring the same flags all over again.
+            let engine = if matches!(
+                kind,
+                sdm_storage::JobKind::Http | sdm_storage::JobKind::WebDav
+            ) {
+                if let Some(job) = sdm_storage::get_job(&pool, &job_id).await? {
+                    let store = sdm_storage::CredentialStore::new(pool.clone());
+                    match sdm_storage::auth::resolve_auth_config(
+                        &pool,
+                        &store,
+                        Some(&job_id),
+                        &job.url,
+                    )
+                    .await?
+                    {
+                        Some(saved) if !saved.is_empty() => {
+                            let mut cfg = sdm_protocols::ClientConfig {
+                                proxy: resolve_global_proxy(&pool).await?,
+                                ..Default::default()
+                            };
+                            for (name, value) in saved.headers {
+                                cfg.extra_headers
+                                    .push(sdm_protocols::AuthHeader::new(name, value));
+                            }
+                            if let Some(cookie) = saved.cookie {
+                                cfg = cfg.with_cookie(cookie, &job.url)?;
+                            }
+                            sdm_engine::Engine::new_with_config(pool.clone(), &cfg)?
+                        }
+                        _ => engine,
+                    }
+                } else {
+                    engine
+                }
+            } else {
+                engine
+            };
 
             let (tx, rx) = sdm_engine::channel();
             let bar_task = tokio::spawn(render_progress(rx));
@@ -1161,8 +1472,231 @@ async fn main() -> anyhow::Result<()> {
             ),
             None => println!("No global proxy configured."),
         },
+        Commands::SetAuthHeader {
+            scope,
+            name,
+            value,
+            job,
+        } => {
+            let store = sdm_storage::CredentialStore::new(pool.clone());
+            let auth_scope = auth_scope_from(scope.clone(), job);
+            let mut cfg = sdm_storage::auth::get_auth_config(&pool, &store, &auth_scope)
+                .await?
+                .unwrap_or_default();
+            cfg.headers.retain(|(n, _)| !n.eq_ignore_ascii_case(&name));
+            cfg.headers.push((name, value));
+            sdm_storage::auth::set_auth_config(&pool, &store, &auth_scope, &cfg).await?;
+            println!(
+                "Saved header for {} {scope:?}.",
+                if job { "job" } else { "domain" }
+            );
+        }
+        Commands::SetAuthCookie { scope, cookie, job } => {
+            let store = sdm_storage::CredentialStore::new(pool.clone());
+            let auth_scope = auth_scope_from(scope.clone(), job);
+            let mut cfg = sdm_storage::auth::get_auth_config(&pool, &store, &auth_scope)
+                .await?
+                .unwrap_or_default();
+            cfg.cookie = Some(cookie);
+            sdm_storage::auth::set_auth_config(&pool, &store, &auth_scope, &cfg).await?;
+            println!(
+                "Saved cookie for {} {scope:?}.",
+                if job { "job" } else { "domain" }
+            );
+        }
+        Commands::ShowAuth { scope, job } => {
+            let store = sdm_storage::CredentialStore::new(pool.clone());
+            let auth_scope = auth_scope_from(scope.clone(), job);
+            match sdm_storage::auth::get_auth_config(&pool, &store, &auth_scope).await? {
+                Some(cfg) => {
+                    let header_names: Vec<&str> =
+                        cfg.headers.iter().map(|(n, _)| n.as_str()).collect();
+                    println!(
+                        "Headers: {}{}",
+                        if header_names.is_empty() {
+                            "(none)".to_string()
+                        } else {
+                            header_names.join(", ")
+                        },
+                        if cfg.cookie.is_some() {
+                            "; cookie: configured"
+                        } else {
+                            "; cookie: (none)"
+                        }
+                    );
+                }
+                None => println!("No auth config for this scope."),
+            }
+        }
+        Commands::ClearAuth { scope, job } => {
+            let store = sdm_storage::CredentialStore::new(pool.clone());
+            let auth_scope = auth_scope_from(scope, job);
+            sdm_storage::auth::delete_auth_config(&pool, &store, &auth_scope).await?;
+            println!("Auth config cleared.");
+        }
+        Commands::OauthLogin {
+            domain,
+            auth_url,
+            token_url,
+            client_id,
+            client_secret,
+            scope,
+            redirect_port,
+        } => {
+            run_oauth_login(
+                &pool,
+                domain,
+                auth_url,
+                token_url,
+                client_id,
+                client_secret,
+                scope,
+                redirect_port,
+            )
+            .await?;
+        }
+        Commands::VpnStatus => {
+            let interfaces = sdm_engine::vpn::detect_vpn_interfaces();
+            if interfaces.is_empty() {
+                println!("No VPN-like interfaces detected.");
+            } else {
+                println!(
+                    "VPN-like interfaces: {}",
+                    interfaces.into_iter().collect::<Vec<_>>().join(", ")
+                );
+            }
+        }
+        Commands::VpnWatch { interval } => {
+            println!("Watching for VPN interface changes every {interval}s (Ctrl-C to stop)...");
+            sdm_engine::VpnMonitor::new(pool.clone())
+                .with_poll_interval(std::time::Duration::from_secs(interval))
+                .run()
+                .await;
+        }
     }
 
+    Ok(())
+}
+
+/// Sprint 12: OAuth2 authorization-code flow with PKCE, driven entirely
+/// from the CLI — prints the authorization URL for the person to open in
+/// a browser, listens on a local loopback port for the provider's
+/// redirect (`http://127.0.0.1:<port>/callback?code=...&state=...`),
+/// exchanges the code for tokens, and stores them encrypted via
+/// `sdm_storage::auth::store_oauth_tokens`.
+#[allow(clippy::too_many_arguments)]
+async fn run_oauth_login(
+    pool: &sdm_storage::SqlitePool,
+    domain: String,
+    auth_url: String,
+    token_url: String,
+    client_id: String,
+    client_secret: Option<String>,
+    scope: Option<String>,
+    redirect_port: Option<u16>,
+) -> anyhow::Result<()> {
+    use oauth2::basic::BasicClient;
+    use oauth2::{
+        AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge,
+        RedirectUrl, Scope, TokenResponse, TokenUrl,
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let bind_addr = format!("127.0.0.1:{}", redirect_port.unwrap_or(0));
+    let listener = tokio::net::TcpListener::bind(&bind_addr)
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!("could not bind local redirect listener on {bind_addr}: {e}")
+        })?;
+    let port = listener.local_addr()?.port();
+    let redirect_uri = RedirectUrl::new(format!("http://127.0.0.1:{port}/callback"))?;
+
+    let client = BasicClient::new(
+        ClientId::new(client_id),
+        client_secret.map(ClientSecret::new),
+        AuthUrl::new(auth_url)?,
+        Some(TokenUrl::new(token_url)?),
+    )
+    .set_redirect_uri(redirect_uri);
+
+    let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
+    let mut auth_request = client
+        .authorize_url(CsrfToken::new_random)
+        .set_pkce_challenge(pkce_challenge);
+    if let Some(scopes) = &scope {
+        for s in scopes.split([',', ' ']).filter(|s| !s.is_empty()) {
+            auth_request = auth_request.add_scope(Scope::new(s.to_string()));
+        }
+    }
+    let (authorize_url, csrf_token) = auth_request.url();
+
+    println!("Open this URL in a browser to log in:\n\n  {authorize_url}\n");
+    println!("Waiting for the redirect on http://127.0.0.1:{port}/callback ...");
+
+    let (mut stream, _) = listener.accept().await?;
+    let mut buf = vec![0u8; 8192];
+    let n = stream.read(&mut buf).await?;
+    let request_text = String::from_utf8_lossy(&buf[..n]);
+    let request_line = request_text.lines().next().unwrap_or("");
+    let path_and_query = request_line.split_whitespace().nth(1).unwrap_or("");
+    let full_url = format!("http://127.0.0.1:{port}{path_and_query}");
+    let parsed = url::Url::parse(&full_url)
+        .map_err(|e| anyhow::anyhow!("could not parse the OAuth redirect request line: {e}"))?;
+
+    let mut code = None;
+    let mut returned_state = None;
+    for (k, v) in parsed.query_pairs() {
+        match k.as_ref() {
+            "code" => code = Some(v.into_owned()),
+            "state" => returned_state = Some(v.into_owned()),
+            _ => {}
+        }
+    }
+
+    let body =
+        "<html><body>Login complete — you can close this tab and return to the terminal.</body></html>";
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let _ = stream.write_all(response.as_bytes()).await;
+    let _ = stream.shutdown().await;
+
+    let code = code.ok_or_else(|| {
+        anyhow::anyhow!("OAuth redirect had no ?code= — login likely failed or was cancelled")
+    })?;
+    match &returned_state {
+        Some(s) if s.as_str() == csrf_token.secret().as_str() => {}
+        _ => anyhow::bail!(
+            "OAuth state mismatch on redirect — possible CSRF, aborting without storing any token"
+        ),
+    }
+
+    let token_result = client
+        .exchange_code(AuthorizationCode::new(code))
+        .set_pkce_verifier(pkce_verifier)
+        .request_async(oauth2::reqwest::async_http_client)
+        .await
+        .map_err(|e| anyhow::anyhow!("token exchange failed: {e}"))?;
+
+    let expires_at = token_result.expires_in().and_then(|d| {
+        chrono::Duration::from_std(d)
+            .ok()
+            .map(|d| (chrono::Utc::now() + d).to_rfc3339())
+    });
+    let tokens = sdm_storage::auth::OAuthTokens {
+        access_token: token_result.access_token().secret().clone(),
+        refresh_token: token_result.refresh_token().map(|t| t.secret().clone()),
+        // `BasicTokenType` (used by `BasicClient`) is Bearer in every
+        // practical OAuth2 provider this flow targets; not worth
+        // threading the type through just to re-stringify "Bearer".
+        token_type: "Bearer".to_string(),
+        expires_at,
+    };
+    let store = sdm_storage::CredentialStore::new(pool.clone());
+    sdm_storage::auth::store_oauth_tokens(pool, &store, &domain, &tokens).await?;
+    println!("OAuth2 login complete for {domain}; tokens stored encrypted.");
     Ok(())
 }
 

@@ -7,19 +7,23 @@
 //! docs/SPRINT_PLAN_PHASE2.md and docs/TECH_DECISIONS.md §5.
 
 pub mod dash;
+pub mod dns;
 pub mod error;
 pub mod ftp;
 pub mod hls;
 pub mod http;
 pub mod metalink;
+pub mod net_config;
 pub mod scp;
 pub mod sftp;
 pub mod ssh;
 pub mod webdav;
 
+pub use dns::{DnsMode, DohProvider};
 pub use error::ErrorClass;
 pub use http::{
     build_client, build_client_with_proxy, download_range, download_single, probe, ProbeInfo,
     ProtoError, ProxyConfig,
 };
+pub use net_config::{build_client_with_config, AuthHeader, ClientConfig};
 pub use ssh::{HostKeyPolicy, SshAuth, SshProtoError, SshSession, SshUrl};

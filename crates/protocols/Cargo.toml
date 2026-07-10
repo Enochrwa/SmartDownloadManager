@@ -25,6 +25,9 @@ base64.workspace = true
 m3u8-rs.workspace = true
 dash-mpd.workspace = true
 url.workspace = true
+# Sprint 12: DNS over HTTPS resolver, with plain-DNS fallback (see
+# crates/protocols/src/dns.rs).
+hickory-resolver.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true
