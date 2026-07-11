@@ -791,6 +791,71 @@ pub async fn delete_job(pool: &SqlitePool, id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Delete a job's row (and, for a media parent, its child rows too —
+/// `ON DELETE CASCADE` isn't relied on here since `parent_job_id` isn't
+/// declared with one) and, if `delete_file` is set, best-effort remove
+/// whatever it downloaded from disk: the destination file for an
+/// ordinary job, or the whole `destination` directory for a media
+/// playlist parent (whose own `destination` is a container directory its
+/// children's files live under — see `crate::media`'s child-job naming
+/// convention).
+///
+/// File removal is deliberately best-effort and never fails the overall
+/// call: the row is the source of truth for "is this still a tracked
+/// download," and a file that's already gone (moved, manually deleted,
+/// on a since-unmounted drive) shouldn't block clearing it from the
+/// queue/history view. Any I/O error removing the file is swallowed
+/// after being logged.
+pub async fn delete_job_with_file(
+    pool: &SqlitePool,
+    id: &str,
+    delete_file: bool,
+) -> anyhow::Result<()> {
+    let record = get_job(pool, id).await?;
+
+    if delete_file {
+        if let Some(record) = &record {
+            let children = list_child_jobs(pool, id).await.unwrap_or_default();
+            let is_playlist_parent = record.job_kind == JobKind::Media && !children.is_empty();
+            let path = std::path::Path::new(&record.destination);
+            let remove_result = if is_playlist_parent {
+                tokio::fs::remove_dir_all(path).await
+            } else {
+                tokio::fs::remove_file(path).await
+            };
+            if let Err(e) = remove_result {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(
+                        job_id = %id,
+                        path = %record.destination,
+                        error = %e,
+                        "failed to delete downloaded file"
+                    );
+                }
+            }
+            for child in &children {
+                let child_path = std::path::Path::new(&child.destination);
+                if let Err(e) = tokio::fs::remove_file(child_path).await {
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        tracing::warn!(
+                            job_id = %child.id,
+                            path = %child.destination,
+                            error = %e,
+                            "failed to delete child job's downloaded file"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    sqlx::query("DELETE FROM jobs WHERE id = ?1 OR parent_job_id = ?1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// List jobs whose `status` is one of the given values, most-recently
 /// created first. Used on app startup to find jobs that were mid-flight
 /// (Downloading/Probing/Verifying) when the process last exited without a
@@ -1960,6 +2025,67 @@ mod tests {
         delete_job(&pool, "job-1").await.unwrap();
         assert!(get_job(&pool, "job-1").await.unwrap().is_none());
         assert!(get_segments(&pool, "job-1").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_job_with_file_false_leaves_the_file_on_disk() {
+        let pool = connect_in_memory().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keepme.zip");
+        std::fs::write(&path, b"data").unwrap();
+
+        insert_job(
+            &pool,
+            "job-1",
+            "https://example.com/keepme.zip",
+            path.to_str().unwrap(),
+        )
+        .await
+        .unwrap();
+
+        delete_job_with_file(&pool, "job-1", false).await.unwrap();
+        assert!(get_job(&pool, "job-1").await.unwrap().is_none());
+        assert!(path.exists(), "file should survive a row-only delete");
+    }
+
+    #[tokio::test]
+    async fn delete_job_with_file_true_removes_the_file_from_disk() {
+        let pool = connect_in_memory().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deleteme.zip");
+        std::fs::write(&path, b"data").unwrap();
+
+        insert_job(
+            &pool,
+            "job-1",
+            "https://example.com/deleteme.zip",
+            path.to_str().unwrap(),
+        )
+        .await
+        .unwrap();
+
+        delete_job_with_file(&pool, "job-1", true).await.unwrap();
+        assert!(get_job(&pool, "job-1").await.unwrap().is_none());
+        assert!(!path.exists(), "file should be gone after delete_file=true");
+    }
+
+    #[tokio::test]
+    async fn delete_job_with_file_true_tolerates_an_already_missing_file() {
+        let pool = connect_in_memory().await.unwrap();
+        insert_job(
+            &pool,
+            "job-1",
+            "https://example.com/gone.zip",
+            "/tmp/sdm-test-already-deleted-file-xyz.zip",
+        )
+        .await
+        .unwrap();
+
+        // Should not error even though the file was never actually
+        // written to disk — deleting the queue entry for a download
+        // whose file was separately moved/removed must still succeed.
+        delete_job_with_file(&pool, "job-1", true).await.unwrap();
+        assert!(get_job(&pool, "job-1").await.unwrap().is_none());
     }
 
     #[tokio::test]

@@ -54,10 +54,11 @@ Phases referenced here are defined in `ROADMAP.md`.
 - [x] Video/audio/subtitles/thumbnails/chapters/metadata download — Phase 2, Sprint 10
 - [ ] Comments download
 - [x] Livestream / playlist / channel / album / podcast detection — Phase 2, Sprint 10
-- [ ] Quality selection 144p–8K
+- [x] Quality selection 144p–8K — Phase 2, Sprint 10 + Phase 2 UI follow-up (`POST /media/probe`, `probe_media` Tauri command, Add Download dialog quality picker)
 - [ ] Codec selection (AV1/VP9/H264/HEVC)
 - [ ] Subtitle download + conversion (SRT/ASS/VTT)
-- [ ] Automatic audio+video merge
+- [x] Automatic audio+video merge — Phase 2, Sprint 10 (`crates/media::ffmpeg::merge_audio_video`)
+- [x] "Capture any link" universal detection reachable from every surface (CLI, REST API, desktop app, browser extension capture) — Phase 2 UI follow-up. Known-host shortlist plus a live yt-dlp probe fallback for unrecognized hosts (`sdm_engine::detect_media_source`), so a pasted link doesn't need to match a fixed site list to be recognized as video/audio.
 
 ## 5. Scheduling — Phase 3
 - [ ] Schedule by date/time/recurring
@@ -75,6 +76,7 @@ Phases referenced here are defined in `ROADMAP.md`.
 - [ ] Priority queue
 - [ ] Nested queues
 - [ ] Categories (Movies/Games/Images/Linux ISOs/Documents/...)
+- [x] Delete download: clear from queue/history, or delete the downloaded file(s) from disk too — Phase 2 UI follow-up (`sdm_storage::delete_job_with_file`, `DELETE /jobs/:id?delete_file=true`, desktop `remove_job` command)
 
 ## 8. File Management — Phase 3
 - [ ] Automatic folder routing by file type

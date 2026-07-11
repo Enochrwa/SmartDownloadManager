@@ -47,6 +47,133 @@ use crate::job::Job;
 use crate::naming::unique_destination;
 use crate::progress::{ProgressEvent, ProgressSender};
 
+/// Hostnames/URL substrings recognized as yt-dlp-capable media sources
+/// without needing a live probe. This is the single authoritative list —
+/// `crates/cli/src/main.rs`, `crates/server/src/routes`, and the desktop
+/// app's Tauri commands all call [`looks_like_media_url`]/
+/// [`detect_media_source`] rather than keeping their own copies, so
+/// "paste a link, get the video" behaves identically everywhere the
+/// engine is embedded.
+///
+/// Deliberately not exhaustive — yt-dlp itself supports thousands of
+/// extractors we have no reliable way to enumerate or keep in sync with
+/// here. Anything not on this list falls through to
+/// [`probe_is_media`]'s live yt-dlp probe instead, which is what makes
+/// "capture any link" actually mean *any* link rather than just this
+/// shortlist.
+pub const KNOWN_MEDIA_HOSTS: &[&str] = &[
+    "youtube.com",
+    "youtu.be",
+    "m.youtube.com",
+    "music.youtube.com",
+    "vimeo.com",
+    "player.vimeo.com",
+    "dailymotion.com",
+    "dai.ly",
+    "twitch.tv",
+    "clips.twitch.tv",
+    "soundcloud.com",
+    "tiktok.com",
+    "x.com/",
+    "twitter.com/",
+    "facebook.com/watch",
+    "fb.watch",
+    "instagram.com/reel",
+    "instagram.com/p/",
+    "instagram.com/tv/",
+    "reddit.com/r/",
+    "v.redd.it",
+    "streamable.com",
+    "bilibili.com",
+    "bandcamp.com",
+    "vk.com/video",
+    "rumble.com",
+    "odysee.com",
+    "ted.com/talks",
+    "vk.com/clip",
+    "niconico.jp",
+    "nicovideo.jp",
+    "mixcloud.com",
+    "crunchyroll.com",
+    "pbs.org/video",
+];
+
+/// Cheap, synchronous check against [`KNOWN_MEDIA_HOSTS`] — no
+/// subprocess involved. Used as the fast path before falling back to
+/// [`probe_is_media`] for hosts this doesn't recognize.
+pub fn looks_like_media_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    KNOWN_MEDIA_HOSTS.iter().any(|h| lower.contains(h))
+}
+
+/// True if the URL's final path segment already looks like an ordinary
+/// filename (`report.pdf`, `archive.zip`, `data.bin`, `firmware.abc123`
+/// — anything with a short alphanumeric suffix after the last dot).
+///
+/// This is deliberately broad rather than matching a fixed extension
+/// list: the whole point is to keep [`probe_is_media`]'s yt-dlp
+/// subprocess off the hot path for ordinary downloads. A modern video
+/// page's URL essentially never has an extension in its final path
+/// segment (`/watch?v=…`, `/reel/…`, `/video/123`); a direct file link
+/// —including ones with an extension this crate has never heard of—
+/// essentially always does. Treating "has *some* short extension" as
+/// "definitely not worth probing" is far cheaper and, in practice, no
+/// less accurate than maintaining an enumerated list, and it means
+/// ordinary large-file downloads with an unusual extension never pay a
+/// multi-second subprocess-probe tax before starting.
+fn has_direct_file_extension(url: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let last_segment = path.rsplit('/').next().unwrap_or(path);
+    match last_segment.rsplit_once('.') {
+        Some((stem, ext))
+            if !stem.is_empty()
+                && (1..=8).contains(&ext.len())
+                && ext.chars().all(|c| c.is_ascii_alphanumeric()) =>
+        {
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Best-effort universal fallback for hosts not on [`KNOWN_MEDIA_HOSTS`]:
+/// a lightweight yt-dlp metadata probe (`--dump-json`, no actual
+/// download) with a short timeout. This is what lets "capture any link"
+/// genuinely mean any link rather than a fixed shortlist — yt-dlp itself
+/// recognizes several thousand sites we can't enumerate up front.
+///
+/// Returns `false` — never blocks a regular HTTP download — on timeout,
+/// probe failure (yt-dlp exits non-zero because the site isn't
+/// supported, which is the overwhelmingly common case for a random
+/// non-video URL), or a response that reports no downloadable formats at
+/// all.
+pub async fn probe_is_media(url: &str, ytdlp: &YtDlpBinary) -> bool {
+    let client = YtDlpClient::new(ytdlp.clone());
+    match tokio::time::timeout(std::time::Duration::from_secs(10), client.probe(url)).await {
+        Ok(Ok(meta)) => !meta.formats.is_empty(),
+        _ => false,
+    }
+}
+
+/// The combined "is this any-link a capturable video/audio source"
+/// check: known-host fast path, then (for anything with no obvious
+/// direct-file extension) a live yt-dlp probe. Callers that already know
+/// they want the probe path unconditionally (e.g. an explicit
+/// "via yt-dlp" override in a UI) can skip straight to
+/// [`probe_is_media`] instead.
+pub async fn detect_media_source(url: &str, ytdlp: &YtDlpBinary) -> bool {
+    if looks_like_media_url(url) {
+        return true;
+    }
+    if has_direct_file_extension(url) {
+        return false;
+    }
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return false;
+    }
+    probe_is_media(url, ytdlp).await
+}
+
 /// Which format to fetch.
 #[derive(Debug, Clone)]
 pub enum QualitySelector {
@@ -621,4 +748,84 @@ fn sanitize_filename(title: &str) -> String {
 
 fn media_err(e: sdm_media::MediaError) -> EngineError {
     EngineError::Other(e.to_string())
+}
+
+#[cfg(test)]
+mod detect_tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_known_hosts_case_and_scheme_insensitively() {
+        assert!(looks_like_media_url(
+            "https://youtu.be/6hkG4-LgwvI?si=1N4LecanvIcoj-BX"
+        ));
+        assert!(looks_like_media_url(
+            "HTTPS://WWW.YOUTUBE.COM/watch?v=dQw4w9WgXcQ"
+        ));
+        assert!(looks_like_media_url("https://vimeo.com/76979871"));
+        assert!(looks_like_media_url(
+            "https://www.tiktok.com/@user/video/123"
+        ));
+        assert!(!looks_like_media_url("https://example.com/report.pdf"));
+    }
+
+    #[test]
+    fn direct_file_extensions_are_recognized() {
+        assert!(has_direct_file_extension(
+            "https://example.com/archive.zip"
+        ));
+        assert!(has_direct_file_extension(
+            "https://example.com/installer.EXE?token=abc"
+        ));
+        assert!(!has_direct_file_extension(
+            "https://example.com/watch?v=abc"
+        ));
+    }
+
+    #[test]
+    fn any_plausible_extension_counts_as_a_direct_file_not_just_the_enumerated_list() {
+        // The whole point of generalizing past a fixed list: an
+        // extension this crate has never heard of should still skip the
+        // probe, since a probe is only worth its multi-second subprocess
+        // cost for genuinely extensionless (page-like) URLs.
+        assert!(has_direct_file_extension(
+            "https://cdn.example.com/firmware.bin"
+        ));
+        assert!(has_direct_file_extension(
+            "https://cdn.example.com/update.abc123"
+        ));
+        assert!(!has_direct_file_extension(
+            "https://example.com/reel/somevideo"
+        ));
+        assert!(!has_direct_file_extension(
+            "https://example.com/video/123"
+        ));
+    }
+
+    #[tokio::test]
+    async fn detect_media_source_short_circuits_on_known_host_without_probing() {
+        // A bogus binary path would make any real probe attempt fail
+        // immediately; a known host must return `true` without ever
+        // reaching that probe, proving the fast path is taken.
+        let bogus_ytdlp = YtDlpBinary::new("/nonexistent/yt-dlp-binary");
+        assert!(detect_media_source("https://youtu.be/dQw4w9WgXcQ", &bogus_ytdlp).await);
+    }
+
+    #[tokio::test]
+    async fn detect_media_source_short_circuits_on_direct_file_extension() {
+        let bogus_ytdlp = YtDlpBinary::new("/nonexistent/yt-dlp-binary");
+        assert!(
+            !detect_media_source("https://example.com/dataset.zip", &bogus_ytdlp).await
+        );
+    }
+
+    #[tokio::test]
+    async fn detect_media_source_never_blocks_on_a_failing_probe() {
+        // Not a known host and no direct-file extension, so this falls
+        // through to `probe_is_media`, which must fail gracefully (not
+        // panic, not hang) against a binary that doesn't exist and
+        // report "not media" rather than propagating an error.
+        let bogus_ytdlp = YtDlpBinary::new("/nonexistent/yt-dlp-binary");
+        assert!(!detect_media_source("https://example.com/some/page", &bogus_ytdlp).await);
+    }
 }

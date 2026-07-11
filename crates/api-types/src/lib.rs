@@ -20,6 +20,67 @@ pub struct CreateJobRequest {
     pub checksum: Option<String>,
     /// One of "overwrite" | "rename" | "skip" (default "rename").
     pub on_duplicate: Option<String>,
+    /// "Capture any link" media options — the video/audio-extraction
+    /// path (`crates/engine::media`, backed by yt-dlp+FFmpeg). When
+    /// unset, the server still auto-detects a media source via
+    /// `sdm_engine::detect_media_source` (known host list, then a live
+    /// yt-dlp probe as a fallback) and applies sensible defaults; this
+    /// struct only needs to be populated when the caller wants to
+    /// override those defaults (e.g. a quality picked from
+    /// `POST /media/probe`'s format list) or force/skip the media path
+    /// explicitly.
+    #[serde(default)]
+    pub media: Option<MediaJobOptions>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaJobOptions {
+    /// `Some(true)` forces the media (yt-dlp) path even if auto-detection
+    /// wouldn't have picked it; `Some(false)` forces a plain HTTP
+    /// download even if auto-detection would have; `None` leaves
+    /// auto-detection in charge.
+    pub force: Option<bool>,
+    /// A concrete `format_id` from a prior `POST /media/probe` response,
+    /// or omitted/`"best"` for the highest-resolution format available.
+    pub quality: Option<String>,
+    /// Subtitle language codes to fetch and embed (e.g. `["en", "rw"]`).
+    #[serde(default)]
+    pub subtitle_langs: Vec<String>,
+    #[serde(default)]
+    pub embed_thumbnail: bool,
+}
+
+/// `POST /media/probe` request/response — lets the UI show a real
+/// quality/format picker (title, thumbnail, duration, available
+/// formats) before a media download actually starts, the same
+/// information `sdm download --via-ytdlp` prints from `YtDlpClient::probe`
+/// on the CLI side.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaProbeRequest {
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaFormatResponse {
+    pub format_id: String,
+    pub ext: Option<String>,
+    pub height: Option<u32>,
+    pub width: Option<u32>,
+    pub vcodec: Option<String>,
+    pub acodec: Option<String>,
+    pub filesize_bytes: Option<u64>,
+    pub tbr: Option<f64>,
+    pub quality_label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaProbeResponse {
+    pub title: Option<String>,
+    pub thumbnail: Option<String>,
+    pub duration_seconds: Option<f64>,
+    pub is_livestream: bool,
+    pub is_playlist: bool,
+    pub formats: Vec<MediaFormatResponse>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +96,16 @@ pub struct JobResponse {
     pub error_class: Option<String>,
     pub error_message: Option<String>,
     pub parent_job_id: Option<String>,
+    /// Populated for `job_kind == "media"` jobs from the `media_meta`
+    /// side table (Sprint 10) — `None` for every other job kind, and
+    /// also `None` for a media job whose metadata probe hasn't landed
+    /// yet. Callers that need this (`routes::jobs::list_jobs`/`get_job`)
+    /// fill it in after the base `From<JobRecord>` conversion below,
+    /// since a `JobRecord` alone has no `media_meta` join.
+    #[serde(default)]
+    pub media_title: Option<String>,
+    #[serde(default)]
+    pub media_thumbnail: Option<String>,
 }
 
 impl From<sdm_storage::JobRecord> for JobResponse {
@@ -51,6 +122,8 @@ impl From<sdm_storage::JobRecord> for JobResponse {
             error_class: r.error_class,
             error_message: r.error_message,
             parent_job_id: r.parent_job_id,
+            media_title: None,
+            media_thumbnail: None,
         }
     }
 }

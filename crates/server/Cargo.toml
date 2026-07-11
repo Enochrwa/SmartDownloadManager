@@ -27,6 +27,7 @@ futures-util.workspace = true
 sdm-engine = { path = "../engine" }
 sdm-storage = { path = "../storage" }
 sdm-api-types = { path = "../api-types" }
+sdm-media = { path = "../media" }
 
 [dev-dependencies]
 tempfile.workspace = true

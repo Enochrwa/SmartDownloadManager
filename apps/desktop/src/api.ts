@@ -1,4 +1,11 @@
-import type { Job, JobEvent, PairingStatus, PairingToken, RepairReport } from "@sdm/common-types";
+import type {
+  Job,
+  JobEvent,
+  MediaProbeResult,
+  PairingStatus,
+  PairingToken,
+  RepairReport,
+} from "@sdm/common-types";
 import { invoke } from "@tauri-apps/api/core";
 import { type UnlistenFn, listen } from "@tauri-apps/api/event";
 
@@ -16,8 +23,22 @@ export const api = {
     mirrors?: string[];
     checksum?: string;
     onDuplicate?: string;
+    /** "Capture any link" media options (Sprint 10 + Phase-2 UI). See
+     * `probeMedia` for getting a quality/format list to populate
+     * `mediaQuality` from before calling this. */
+    forceMedia?: boolean;
+    mediaQuality?: string;
+    subtitleLangs?: string[];
+    embedThumbnail?: boolean;
   }): Promise<void> {
     return invoke("add_download", args);
+  },
+  /** Probe a URL for "capture any link" title/thumbnail/quality metadata
+   * without starting a download — powers the Add Download dialog's
+   * quality picker once a pasted URL is recognized as (or explicitly
+   * marked as) a video/audio page. */
+  probeMedia(url: string): Promise<MediaProbeResult> {
+    return invoke("probe_media", { url });
   },
   resumeJob(jobId: string): Promise<void> {
     return invoke("resume_job", { jobId });
@@ -28,8 +49,11 @@ export const api = {
   cancelJob(jobId: string): Promise<void> {
     return invoke("cancel_job", { jobId });
   },
-  removeJob(jobId: string): Promise<void> {
-    return invoke("remove_job", { jobId });
+  /** Remove a job from the queue/history. `deleteFile: true` also
+   * deletes the downloaded file(s) from disk — the real "Delete
+   * download" action, not just clearing the row. */
+  removeJob(jobId: string, deleteFile?: boolean): Promise<void> {
+    return invoke("remove_job", { jobId, deleteFile });
   },
   listJobs(): Promise<Job[]> {
     return invoke("list_jobs");

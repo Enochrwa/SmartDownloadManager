@@ -399,29 +399,6 @@ fn is_metalink_source(url: &str) -> bool {
     path.ends_with(".metalink") || path.ends_with(".meta4")
 }
 
-/// Best-effort recognition of a handful of well-known yt-dlp-supported
-/// sites, so `sdm download <url>` works without `--via-ytdlp` for the
-/// most common case. This is deliberately NOT exhaustive — yt-dlp itself
-/// supports thousands of extractors we have no reliable way to enumerate
-/// or keep in sync with here — so `--via-ytdlp` remains the reliable way
-/// to reach anything not on this short list.
-fn looks_like_ytdlp_site(url: &str) -> bool {
-    const KNOWN_HOSTS: &[&str] = &[
-        "youtube.com",
-        "youtu.be",
-        "vimeo.com",
-        "dailymotion.com",
-        "twitch.tv",
-        "soundcloud.com",
-        "tiktok.com",
-        "x.com/",
-        "twitter.com/",
-        "facebook.com/watch",
-        "reddit.com/r/",
-    ];
-    let lower = url.to_ascii_lowercase();
-    KNOWN_HOSTS.iter().any(|h| lower.contains(h))
-}
 
 fn default_destination(url: &str) -> String {
     let name = url
@@ -697,7 +674,15 @@ async fn main() -> anyhow::Result<()> {
                 sdm_engine::Engine::new_with_config(pool.clone(), &client_cfg)?
             };
 
-            if via_ytdlp || looks_like_ytdlp_site(&url) {
+            // "Capture any link": known hosts are recognized instantly;
+            // anything else (and not an obvious direct-file URL, e.g.
+            // `.zip`/`.pdf`) gets a live yt-dlp probe before falling back
+            // to a plain HTTP download, so `sdm download <url>` extracts
+            // MP4/audio from thousands of sites without requiring
+            // `--via-ytdlp` to be spelled out for each one.
+            let is_media = via_ytdlp
+                || sdm_engine::detect_media_source(&url, &sdm_media::YtDlpBinary::default()).await;
+            if is_media {
                 let destination_dir = PathBuf::from(output.unwrap_or_else(|| ".".to_string()));
                 let subtitle_langs = subs
                     .as_deref()

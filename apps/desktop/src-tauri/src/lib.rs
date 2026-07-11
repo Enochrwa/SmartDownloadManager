@@ -32,6 +32,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             commands::add_download,
+            commands::probe_media,
             commands::resume_job,
             commands::pause_job,
             commands::cancel_job,

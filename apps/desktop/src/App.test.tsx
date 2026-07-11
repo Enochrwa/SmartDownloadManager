@@ -9,6 +9,7 @@ const mockApi = vi.hoisted(() => ({
   getSettings: vi.fn().mockResolvedValue({}),
   onJobEvent: vi.fn().mockResolvedValue(() => {}),
   addDownload: vi.fn().mockResolvedValue(undefined),
+  probeMedia: vi.fn().mockResolvedValue({ isLivestream: false, isPlaylist: false, formats: [] }),
   setSetting: vi.fn().mockResolvedValue(undefined),
   pauseJob: vi.fn().mockResolvedValue(undefined),
   resumeJob: vi.fn().mockResolvedValue(undefined),
@@ -59,7 +60,9 @@ describe("App", () => {
     render(<App />);
     fireEvent.click(screen.getByText("Add download"));
     const dialog = await screen.findByLabelText("Add download");
-    const urlInput = within(dialog).getByPlaceholderText("https://example.com/file.zip");
+    const urlInput = within(dialog).getByPlaceholderText(
+      "https://example.com/file.zip or https://youtu.be/…",
+    );
     fireEvent.change(urlInput, { target: { value: "https://example.com/movie.mkv" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Add download" }));
 
