@@ -771,9 +771,7 @@ mod detect_tests {
 
     #[test]
     fn direct_file_extensions_are_recognized() {
-        assert!(has_direct_file_extension(
-            "https://example.com/archive.zip"
-        ));
+        assert!(has_direct_file_extension("https://example.com/archive.zip"));
         assert!(has_direct_file_extension(
             "https://example.com/installer.EXE?token=abc"
         ));
@@ -797,9 +795,7 @@ mod detect_tests {
         assert!(!has_direct_file_extension(
             "https://example.com/reel/somevideo"
         ));
-        assert!(!has_direct_file_extension(
-            "https://example.com/video/123"
-        ));
+        assert!(!has_direct_file_extension("https://example.com/video/123"));
     }
 
     #[tokio::test]
@@ -814,9 +810,7 @@ mod detect_tests {
     #[tokio::test]
     async fn detect_media_source_short_circuits_on_direct_file_extension() {
         let bogus_ytdlp = YtDlpBinary::new("/nonexistent/yt-dlp-binary");
-        assert!(
-            !detect_media_source("https://example.com/dataset.zip", &bogus_ytdlp).await
-        );
+        assert!(!detect_media_source("https://example.com/dataset.zip", &bogus_ytdlp).await);
     }
 
     #[tokio::test]

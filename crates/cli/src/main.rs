@@ -399,7 +399,6 @@ fn is_metalink_source(url: &str) -> bool {
     path.ends_with(".metalink") || path.ends_with(".meta4")
 }
 
-
 fn default_destination(url: &str) -> String {
     let name = url
         .rsplit('/')

@@ -58,8 +58,7 @@ async fn capture_one(state: &Arc<ServerState>, url: &str) -> anyhow::Result<(Job
         return Ok((existing, true));
     }
 
-    let is_media =
-        sdm_engine::detect_media_source(url, &sdm_media::YtDlpBinary::default()).await;
+    let is_media = sdm_engine::detect_media_source(url, &sdm_media::YtDlpBinary::default()).await;
 
     let id_rx = if is_media {
         let url = url.to_string();

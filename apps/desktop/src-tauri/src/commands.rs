@@ -225,9 +225,7 @@ pub async fn add_download(
 
     let is_media = match force_media {
         Some(explicit) => explicit,
-        None => {
-            sdm_engine::detect_media_source(&url, &sdm_media::YtDlpBinary::default()).await
-        }
+        None => sdm_engine::detect_media_source(&url, &sdm_media::YtDlpBinary::default()).await,
     };
 
     if is_media {

@@ -87,9 +87,7 @@ pub async fn create_job(
     let force_media = req.media.as_ref().and_then(|m| m.force);
     let is_media = match force_media {
         Some(explicit) => explicit,
-        None => {
-            sdm_engine::detect_media_source(&req.url, &sdm_media::YtDlpBinary::default()).await
-        }
+        None => sdm_engine::detect_media_source(&req.url, &sdm_media::YtDlpBinary::default()).await,
     };
 
     if is_media {
