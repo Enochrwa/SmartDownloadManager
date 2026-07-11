@@ -124,16 +124,13 @@ pub fn looks_like_media_url(url: &str) -> bool {
 fn has_direct_file_extension(url: &str) -> bool {
     let path = url.split(['?', '#']).next().unwrap_or(url);
     let last_segment = path.rsplit('/').next().unwrap_or(path);
-    match last_segment.rsplit_once('.') {
+    matches!(
+        last_segment.rsplit_once('.'),
         Some((stem, ext))
             if !stem.is_empty()
                 && (1..=8).contains(&ext.len())
-                && ext.chars().all(|c| c.is_ascii_alphanumeric()) =>
-        {
-            true
-        }
-        _ => false,
-    }
+                && ext.chars().all(|c| c.is_ascii_alphanumeric())
+    )
 }
 
 /// Best-effort universal fallback for hosts not on [`KNOWN_MEDIA_HOSTS`]:
