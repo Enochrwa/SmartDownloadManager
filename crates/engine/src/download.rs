@@ -194,6 +194,45 @@ impl Engine {
             .await
     }
 
+    /// Start a new "capture any link" media download (Sprint 10, wired
+    /// into the network API in Phase 2's UI-improvement follow-up): the
+    /// URL is handed to `yt-dlp` (thousands of supported sites, not just
+    /// the ones with a direct manifest) and, once fetched, the
+    /// audio/video streams are merged into a single playable file via
+    /// FFmpeg if the chosen format didn't already carry both. See
+    /// `crate::media::MediaEngine` for the actual orchestration — this
+    /// wrapper exists so callers that only hold `Arc<Engine>` (the
+    /// server's job runner, the desktop app's Tauri commands) don't need
+    /// their own `SqlitePool` handle just to reach `MediaEngine`.
+    pub async fn start_media_download(
+        &self,
+        req: crate::media::MediaDownloadRequest,
+        progress: ProgressSender,
+    ) -> Result<Job, EngineError> {
+        crate::media::MediaEngine::new(&self.pool)
+            .start_download(req, progress)
+            .await
+    }
+
+    /// Resume a previously-started media job. See
+    /// `crate::media::MediaEngine::resume_download` for why this
+    /// re-derives the original format/subtitle/thumbnail choices from
+    /// `media_meta` instead of taking a fresh request.
+    pub async fn resume_media_download(
+        &self,
+        job_id: String,
+        progress: ProgressSender,
+    ) -> Result<Job, EngineError> {
+        crate::media::MediaEngine::new(&self.pool)
+            .resume_download(
+                job_id,
+                sdm_media::YtDlpBinary::default(),
+                sdm_media::FfmpegBinary::default(),
+                progress,
+            )
+            .await
+    }
+
     /// Download a Metalink (`.metalink`/`.meta4`) document's first file
     /// entry (Sprint 9). Resolves to an ordinary [`start_download`]
     /// call — see `crate::metalink`'s module docs for why no separate

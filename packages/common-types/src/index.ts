@@ -25,6 +25,36 @@ export interface Job {
   checksumActual?: string | null;
   checksumVerified: boolean;
   errorMessage?: string | null;
+  /** "http" | "ftp" | "torrent" | "sftp" | "scp" | "webdav" | "hls" |
+   * "dash" | "media" — "media" jobs came from the "capture any link"
+   * yt-dlp/FFmpeg path (Sprint 10) rather than a direct file transfer.
+   * Optional only so existing test fixtures/older cached rows without it
+   * still type-check; treat a missing value as `"http"`. */
+  jobKind?: string;
+  parentJobId?: string | null;
+  /** Populated for `jobKind === "media"` jobs once probed. */
+  mediaTitle?: string | null;
+  mediaThumbnail?: string | null;
+}
+
+/** One selectable quality/codec format from `probeMedia` — backs the Add
+ * Download dialog's quality picker for a "capture any link" URL. */
+export interface MediaFormat {
+  formatId: string;
+  qualityLabel: string;
+  ext?: string | null;
+  hasVideo: boolean;
+  hasAudio: boolean;
+  filesizeBytes?: number | null;
+}
+
+export interface MediaProbeResult {
+  title?: string | null;
+  thumbnail?: string | null;
+  durationSeconds?: number | null;
+  isLivestream: boolean;
+  isPlaylist: boolean;
+  formats: MediaFormat[];
 }
 
 /** Streamed from the Tauri backend on the `job-event` event channel. */

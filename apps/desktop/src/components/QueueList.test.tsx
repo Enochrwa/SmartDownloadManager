@@ -65,8 +65,40 @@ describe("QueueList", () => {
         speedHistory={{}}
       />,
     );
-    fireEvent.click(screen.getByText("Remove"));
-    expect(mockApi.removeJob).toHaveBeenCalledWith("job-1");
+    fireEvent.click(screen.getByText("Delete"));
+    fireEvent.click(screen.getByText("Remove only"));
+    expect(mockApi.removeJob).toHaveBeenCalledWith("job-1", false);
+  });
+
+  it("deletes the file too when confirmed", () => {
+    render(
+      <QueueList
+        jobs={[{ ...downloadingJob, status: "completed", downloadedBytes: 1000 }]}
+        speedHistory={{}}
+      />,
+    );
+    fireEvent.click(screen.getByText("Delete"));
+    fireEvent.click(screen.getByText("Delete file"));
+    expect(mockApi.removeJob).toHaveBeenCalledWith("job-1", true);
+  });
+
+  it("shows the media badge and title for a captured video job", () => {
+    render(
+      <QueueList
+        jobs={[
+          {
+            ...downloadingJob,
+            status: "completed",
+            downloadedBytes: 1000,
+            jobKind: "media",
+            mediaTitle: "Big Buck Bunny",
+          },
+        ]}
+        speedHistory={{}}
+      />,
+    );
+    expect(screen.getByText("Big Buck Bunny")).toBeInTheDocument();
+    expect(screen.getByText("🎬 Media")).toBeInTheDocument();
   });
 
   it("shows the error message for a failed job", () => {

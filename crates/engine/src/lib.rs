@@ -46,7 +46,10 @@ pub use error::EngineError;
 pub use ftp::FtpDownloadRequest;
 pub use hls::{HlsDownloadRequest, HlsEngine};
 pub use job::{Job, JobKind, JobStatus};
-pub use media::{MediaDownloadRequest, MediaEngine, QualitySelector};
+pub use media::{
+    detect_media_source, looks_like_media_url, probe_is_media, MediaDownloadRequest, MediaEngine,
+    QualitySelector,
+};
 pub use metalink::MetalinkSource;
 pub use mirrors::MirrorSet;
 pub use progress::{channel, ProgressEvent, ProgressReceiver, ProgressSender};

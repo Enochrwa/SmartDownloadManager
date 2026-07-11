@@ -18,6 +18,15 @@ pub struct JobDto {
     pub checksum_actual: Option<String>,
     pub checksum_verified: bool,
     pub error_message: Option<String>,
+    /// "http" | "ftp" | "torrent" | "sftp" | "scp" | "webdav" | "hls" |
+    /// "dash" | "media" — lets the queue UI show a distinct icon/badge
+    /// for "capture any link" (yt-dlp) jobs vs. every other transport.
+    pub job_kind: String,
+    pub parent_job_id: Option<String>,
+    /// Populated for `job_kind == "media"` jobs from the `media_meta`
+    /// side table — see `list_jobs`'s enrichment step in `commands.rs`.
+    pub media_title: Option<String>,
+    pub media_thumbnail: Option<String>,
 }
 
 impl From<sdm_storage::JobRecord> for JobDto {
@@ -34,8 +43,36 @@ impl From<sdm_storage::JobRecord> for JobDto {
             checksum_actual: r.checksum_actual,
             checksum_verified: r.checksum_verified,
             error_message: r.error_message,
+            job_kind: r.job_kind.as_str().to_string(),
+            parent_job_id: r.parent_job_id,
+            media_title: None,
+            media_thumbnail: None,
         }
     }
+}
+
+/// One selectable quality/codec format from a `probe_media` call — backs
+/// the Add Download dialog's quality picker.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaFormatDto {
+    pub format_id: String,
+    pub quality_label: String,
+    pub ext: Option<String>,
+    pub has_video: bool,
+    pub has_audio: bool,
+    pub filesize_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaProbeDto {
+    pub title: Option<String>,
+    pub thumbnail: Option<String>,
+    pub duration_seconds: Option<f64>,
+    pub is_livestream: bool,
+    pub is_playlist: bool,
+    pub formats: Vec<MediaFormatDto>,
 }
 
 /// Streamed to the frontend on the `job-event` Tauri event channel as a

@@ -23,6 +23,7 @@ chrono.workspace = true
 dirs = "5"
 sdm-engine = { path = "../../../crates/engine" }
 sdm-storage = { path = "../../../crates/storage" }
+sdm-media = { path = "../../../crates/media" }
 sdm-server = { path = "../../../crates/server" }
 sdm-api-types = { path = "../../../crates/api-types" }
 axum.workspace = true

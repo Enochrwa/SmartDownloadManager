@@ -19,6 +19,7 @@ rand.workspace = true
 hex.workspace = true
 thiserror.workspace = true
 url.workspace = true
+tracing.workspace = true
 
 [lib]
 name = "sdm_storage"

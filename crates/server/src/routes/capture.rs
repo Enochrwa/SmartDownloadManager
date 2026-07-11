@@ -39,6 +39,16 @@ fn err(status: StatusCode, message: impl Into<String>) -> axum::response::Respon
 /// best-effort in-flight `JobResponse` (id + Queued status) since the
 /// full download itself continues asynchronously, streaming further
 /// progress over `/ws/progress`.
+///
+/// Sprint 10/Phase-2 UI follow-up: a captured URL that
+/// `sdm_engine::detect_media_source` recognizes as a video/audio page
+/// (a right-click "Download with SmartDownloadManager" on a YouTube tab,
+/// a clipboard-copied share link, etc.) is routed through
+/// `Engine::start_media_download` instead of the plain HTTP path, so the
+/// browser extension gets the same "any link becomes MP4" behavior as
+/// the desktop app and CLI — this is the actual point of contact between
+/// "capture" and "extract video," since a browser rarely sees a direct
+/// `.mp4` URL for a modern video site to begin with.
 async fn capture_one(state: &Arc<ServerState>, url: &str) -> anyhow::Result<(JobResponse, bool)> {
     let parsed = util::parse_create_request(state, url, None, None, None)?;
 
@@ -48,24 +58,43 @@ async fn capture_one(state: &Arc<ServerState>, url: &str) -> anyhow::Result<(Job
         return Ok((existing, true));
     }
 
-    let download_req = DownloadRequest {
-        url: url.to_string(),
-        mirrors: Vec::new(),
-        destination: parsed.destination,
-        connections: ConnectionsOption::Auto,
-        expected_checksum: parsed.expected_checksum,
-        duplicate_policy: parsed.duplicate_policy,
-    };
+    let is_media = sdm_engine::detect_media_source(url, &sdm_media::YtDlpBinary::default()).await;
 
-    // `start_download` mints the job id itself and only inserts the row
-    // once it does — `spawn_job_runner_awaiting_id` hands that id back as
-    // soon as the first progress event (which can only fire after the
-    // insert) arrives, so by the time we read it back below the row is
-    // guaranteed to exist.
-    let id_rx =
+    let id_rx = if is_media {
+        let url = url.to_string();
+        let destination_dir = state.default_download_dir.clone();
+        crate::runner::spawn_job_runner_awaiting_id(state.clone(), move |engine, tx| async move {
+            let req = sdm_engine::MediaDownloadRequest {
+                url,
+                destination_dir,
+                quality: sdm_engine::QualitySelector::Best,
+                subtitle_langs: Vec::new(),
+                embed_thumbnail: true,
+                duplicate_policy: sdm_engine::DuplicatePolicy::Rename,
+                ytdlp: sdm_media::YtDlpBinary::default(),
+                ffmpeg: sdm_media::FfmpegBinary::default(),
+            };
+            engine.start_media_download(req, tx).await
+        })
+    } else {
+        let download_req = DownloadRequest {
+            url: url.to_string(),
+            mirrors: Vec::new(),
+            destination: parsed.destination,
+            connections: ConnectionsOption::Auto,
+            expected_checksum: parsed.expected_checksum,
+            duplicate_policy: parsed.duplicate_policy,
+        };
+
+        // `start_download` mints the job id itself and only inserts the
+        // row once it does — `spawn_job_runner_awaiting_id` hands that id
+        // back as soon as the first progress event (which can only fire
+        // after the insert) arrives, so by the time we read it back below
+        // the row is guaranteed to exist.
         crate::runner::spawn_job_runner_awaiting_id(state.clone(), move |engine, tx| async move {
             engine.start_download(download_req, tx).await
-        });
+        })
+    };
 
     let job_id = id_rx
         .await

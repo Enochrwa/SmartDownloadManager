@@ -199,6 +199,7 @@ where
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn add_download(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
@@ -208,8 +209,50 @@ pub async fn add_download(
     mirrors: Option<Vec<String>>,
     checksum: Option<String>,
     on_duplicate: Option<String>,
+    // "Capture any link" media options — set from the Add Download
+    // dialog's quality picker (see `probe_media` below) once the
+    // frontend's own quick host-list check, or a `probe_media` call,
+    // flags the URL as a video/audio page. `force_media: Some(false)`
+    // lets the user explicitly opt out (e.g. a YouTube URL they
+    // genuinely want yt-dlp to skip) even when auto-detection would
+    // have picked the media path.
+    force_media: Option<bool>,
+    media_quality: Option<String>,
+    subtitle_langs: Option<Vec<String>>,
+    embed_thumbnail: Option<bool>,
 ) -> Result<(), String> {
     let state = state.inner().clone();
+
+    let is_media = match force_media {
+        Some(explicit) => explicit,
+        None => sdm_engine::detect_media_source(&url, &sdm_media::YtDlpBinary::default()).await,
+    };
+
+    if is_media {
+        let destination_dir = match destination {
+            Some(d) if !d.trim().is_empty() => PathBuf::from(d),
+            _ => state.paths.default_download_dir.clone(),
+        };
+        let quality = media_quality
+            .filter(|q| !q.trim().is_empty() && !q.eq_ignore_ascii_case("best"))
+            .map(sdm_engine::QualitySelector::FormatId)
+            .unwrap_or(sdm_engine::QualitySelector::Best);
+        let req = sdm_engine::MediaDownloadRequest {
+            url,
+            destination_dir,
+            quality,
+            subtitle_langs: subtitle_langs.unwrap_or_default(),
+            embed_thumbnail: embed_thumbnail.unwrap_or(true),
+            duplicate_policy: DuplicatePolicy::parse(on_duplicate.as_deref().unwrap_or("rename"))
+                .map_err(|e| e.to_string())?,
+            ytdlp: sdm_media::YtDlpBinary::default(),
+            ffmpeg: sdm_media::FfmpegBinary::default(),
+        };
+        spawn_job_runner(app, state, move |engine, tx| async move {
+            engine.start_media_download(req, tx).await
+        });
+        return Ok(());
+    }
 
     let destination = match destination {
         Some(d) if !d.trim().is_empty() => PathBuf::from(d),
@@ -243,6 +286,55 @@ pub async fn add_download(
     Ok(())
 }
 
+/// Probe a URL for "capture any link" media metadata (title, thumbnail,
+/// duration, available quality/codec formats) without starting a
+/// download — backs the Add Download dialog's quality picker. Mirrors
+/// `crates/server/src/routes/media.rs::probe`; kept as a separate
+/// implementation (rather than sharing a function) since the two crates
+/// have no shared dependency edge for this one read-only call, and the
+/// logic is a handful of lines either way.
+#[tauri::command]
+pub async fn probe_media(url: String) -> Result<crate::dto::MediaProbeDto, String> {
+    let client = sdm_media::YtDlpClient::new(sdm_media::YtDlpBinary::default());
+
+    let entries = client
+        .probe_playlist(&url)
+        .await
+        .map_err(|e| e.to_string())?;
+    if entries.len() > 1 {
+        return Ok(crate::dto::MediaProbeDto {
+            title: Some(format!("Playlist ({} videos)", entries.len())),
+            thumbnail: None,
+            duration_seconds: None,
+            is_livestream: false,
+            is_playlist: true,
+            formats: Vec::new(),
+        });
+    }
+
+    let meta = client.probe(&url).await.map_err(|e| e.to_string())?;
+    let formats = meta
+        .formats
+        .iter()
+        .map(|f| crate::dto::MediaFormatDto {
+            format_id: f.format_id.clone(),
+            quality_label: f.quality_label(),
+            ext: f.ext.clone(),
+            has_video: f.has_video(),
+            has_audio: f.has_audio(),
+            filesize_bytes: f.filesize.or(f.filesize_approx),
+        })
+        .collect();
+    Ok(crate::dto::MediaProbeDto {
+        title: meta.title.clone(),
+        thumbnail: meta.thumbnail.clone(),
+        duration_seconds: meta.duration,
+        is_livestream: meta.is_livestream(),
+        is_playlist: false,
+        formats,
+    })
+}
+
 #[tauri::command]
 pub async fn resume_job(
     app: AppHandle,
@@ -250,10 +342,20 @@ pub async fn resume_job(
     job_id: String,
 ) -> Result<(), String> {
     let state = state.inner().clone();
+    let record = sdm_storage::get_job(&state.pool, &job_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "job not found".to_string())?;
     let id_for_run = job_id.clone();
-    spawn_job_runner(app, state, move |engine, tx| async move {
-        engine.resume_download(&id_for_run, tx).await
-    });
+    if record.job_kind == sdm_storage::JobKind::Media {
+        spawn_job_runner(app, state, move |engine, tx| async move {
+            engine.resume_media_download(id_for_run, tx).await
+        });
+    } else {
+        spawn_job_runner(app, state, move |engine, tx| async move {
+            engine.resume_download(&id_for_run, tx).await
+        });
+    }
     Ok(())
 }
 
@@ -296,15 +398,24 @@ pub async fn cancel_job(state: State<'_, Arc<AppState>>, job_id: String) -> Resu
         .map_err(|e| e.to_string())
 }
 
+/// Remove a job from the queue/history view, optionally deleting the
+/// file(s) it downloaded from disk too (`delete_file: true`) — the
+/// "Delete download" action, as distinct from just clearing a row from
+/// the list. See `sdm_storage::delete_job_with_file` for exactly what
+/// gets removed for a media playlist parent vs. an ordinary job.
 #[tauri::command]
-pub async fn remove_job(state: State<'_, Arc<AppState>>, job_id: String) -> Result<(), String> {
+pub async fn remove_job(
+    state: State<'_, Arc<AppState>>,
+    job_id: String,
+    delete_file: Option<bool>,
+) -> Result<(), String> {
     {
         let mut running = state.running.lock().await;
         if let Some(job) = running.remove(&job_id) {
             job.abort.abort();
         }
     }
-    sdm_storage::delete_job(&state.pool, &job_id)
+    sdm_storage::delete_job_with_file(&state.pool, &job_id, delete_file.unwrap_or(false))
         .await
         .map_err(|e| e.to_string())
 }
@@ -314,7 +425,18 @@ pub async fn list_jobs(state: State<'_, Arc<AppState>>) -> Result<Vec<JobDto>, S
     let jobs = sdm_storage::list_jobs(&state.pool)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(jobs.into_iter().map(JobDto::from).collect())
+    let mut out = Vec::with_capacity(jobs.len());
+    for job in jobs {
+        let mut dto = JobDto::from(job);
+        if dto.job_kind == "media" {
+            if let Ok(Some(meta)) = sdm_storage::get_media_meta(&state.pool, &dto.id).await {
+                dto.media_title = meta.title;
+                dto.media_thumbnail = meta.thumbnail_url;
+            }
+        }
+        out.push(dto);
+    }
+    Ok(out)
 }
 
 #[tauri::command]
